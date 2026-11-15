@@ -1,0 +1,2088 @@
+diff --git a/AGENTS.md b/AGENTS.md
+index 16628bc..722b3c2 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,10 +1,10 @@
+ # AGENTS.md — ProjectApp (N-Tier, .NET 10)
+ 
+-Ayrıntı için önce `README.md`, sonra `docs/AI_WORKFLOW.md` ve `recipes/README.md` okunur. Kod/identifier İngilizce; yorum ve kullanıcı mesajları Türkçe.
++Ayrıntı için önce `README.md`, sonra `docs/AI_WORKFLOW.md` ve `docs/wiki/index.md` okunur. Kod/identifier İngilizce; yorum ve kullanıcı mesajları Türkçe.
+ 
+ ## Seviye
+-- Proje **S2 (Küçük ekip)** seviyesindedir. Projenin gerçek seviyesi `CLAUDE.md` "Seviye" bölümündedir.
+-- Seviyenin üstündeki özellik (soft delete, RowVersion, audit kullanıcı alanları, rol yönetimi → S2-S3 reçetesi; domain event, versiyonlama, önbellek → Onion) **eklenmez**; gerekiyorsa `recipes/` altındaki reçete önerilir ve kullanıcıya sorulur.
++- Proje **S3 (Kurum içi)** seviyesindedir. Projenin gerçek seviyesi `CLAUDE.md` "Seviye" bölümündedir. N-Tier mimarisinin tavanı S3'tür.
++- Seviyenin üstündeki özellikler (domain event, API versiyonlama, önbellek → Onion S4-S5) **eklenmez**; bu özellikler Onion şablonundadır ve geçiş reçete değil yeni projeye taşımadır.
+ - Kodda olmayan bir özelliği "en iyi uygulama" diye geri ekleme.
+ 
+ ## Katmanlar (tek yönlü bağımlılık)
+@@ -16,17 +16,20 @@ Ayrıntı için önce `README.md`, sonra `docs/AI_WORKFLOW.md` ve `recipes/READM
+ ## Değişmez kurallar
+ - Servis metotları `ServiceResult`/`ServiceResult<T>` döner; iş hatası için exception fırlatılmaz.
+ - ID `Guid` (`Guid.CreateVersion7()`); mapping yalnızca Mapster; her async metotta `CancellationToken`.
+-- Kullanıcı kimliği yalnızca `ICurrentUserService.UserId`; endpoint `userId` parametresi almaz (IDOR).
++- Kullanıcı kimliği yalnızca `ICurrentUserService.UserId`; endpoint `userId` parametresi almaz (IDOR). Rol kapsamı için `ICurrentUserService.IsInRole(role)`.
++- Rol yönetimi: `ICurrentUserService.IsInRole(role)`; Admin uçları `GET`/`PUT /api/users/{id}/roles` (rol değişince eski token'lar 401). Yeni rol eklemek: `RoleNames` + `AppRoleConfiguration.HasData` + migration.
+ - Register `Registration:AllowPublic` ayarına bağlıdır: false (varsayılan) ise yalnızca Admin kullanıcı ekler; true ise herkes kayıt olur ve `User` rolü alır (açık kayıtta e-posta doğrulaması ayrıca eklenir).
+ - Zaman için `TimeProvider`; `DateTime.UtcNow` kullanılmaz.
+ - Yasaklı paketler: AutoMapper, MediatR, Swashbuckle, MassTransit, FluentValidation.AspNetCore, FluentAssertions.
+ - Paket sürümleri yalnızca `Directory.Packages.props` içinde.
+ - Güvenlik tabanı hiçbir seviyede düşmez: HTTPS, şifre hash (Identity), gizli anahtar repoda değil, girdi doğrulama, yedek.
++- Sıkı Production açılış kontrolleri: `ConnectionStrings:DefaultConnection`, `Jwt:SigningKey`, `Cors:AllowedOrigins`, `AllowedHosts`, `ForwardedHeaders` yapılandırılmalıdır; eksik veya geçersizse uygulama açılmaz. `X-Correlation-Id` tüm loglarda yer alır.
+ 
+ ## Yeni entity checklist
+-1. `AuditableEntity`'den türet (Created/Updated); configuration'da gerekiyorsa düz unique index; `DbSet` ekle.
+-2. Request/Response/Dto `record`, validator, `IRegister` mapping.
+-3. `I<Entity>Service` + servis (`AppDbContext` + `IMapper` enjekte) + `ServiceExtensions` kaydı; controller.
++1. `AuditableEntity`'den türet (`Created`/`Updated` + `CreatedBy`/`UpdatedBy`, `IsDeleted` soft delete, `RowVersion`); configuration'da `Property(x => x.RowVersion).IsRowVersion()` ve filtreli unique index (`[IsDeleted] = 0`); `DbSet` ekle.
++   - *Kritik RowVersion kontrolü (migration üretmeden ÖNCE):* configuration'da `Property(x => x.RowVersion).IsRowVersion()` mutlaka eklenmelidir. Unutulursa kolon `varbinary(max)` olur ve sonradan `AlterColumn` SQL Server'da 4927 hatası verir (DropColumn+AddColumn gerekir).
++2. Request/Response/Dto `record`, validator, `IRegister` mapping. Update request + DTO'ya `byte[] RowVersion` ekle; validator'da zorunlu kıl (`NotEmpty()`).
++3. `I<Entity>Service` + servis (`AppDbContext` + `IMapper` enjekte) + `ServiceExtensions` kaydı; controller. Serviste güncellemeden önce `context.Entry(entity).Property(x => x.RowVersion).OriginalValue = request.RowVersion;` ata (`DbUpdateConcurrencyException` → `GlobalExceptionHandler` ile 409 döner). Rol kapsamı için `ICurrentUserService.IsInRole(role)` kullan.
+ 4. Unit (SQLite `TestDb`) + entegrasyon testi (kullanıcı gerekiyorsa `TestHelpers.RegisterAndLoginAsync`); `dotnet ef migrations add`; README güncelle.
+ 
+ ## Doğrulama
+@@ -34,4 +37,4 @@ Ayrıntı için önce `README.md`, sonra `docs/AI_WORKFLOW.md` ve `recipes/READM
+ - `dotnet test ProjectApp.slnx -v q`
+ 
+ ## Referans dosyalar
+-`README.md`, `docs/AI_WORKFLOW.md`, `recipes/README.md`, `Directory.Packages.props`, `ProjectApp.API/Program.cs`, `ProjectApp.Services/Features/Products/ProductService.cs`, `tests/ProjectApp.UnitTests/ProductServiceTests.cs`, `tests/ProjectApp.IntegrationTests/TestHelpers.cs`.
++`README.md`, `docs/AI_WORKFLOW.md`, `docs/wiki/index.md`, `Directory.Packages.props`, `ProjectApp.API/Program.cs`, `ProjectApp.Services/Features/Products/ProductService.cs`, `tests/ProjectApp.UnitTests/ProductServiceTests.cs`, `tests/ProjectApp.IntegrationTests/TestHelpers.cs`.
+diff --git a/CLAUDE.md b/CLAUDE.md
+index 6bc26a3..cb2fb60 100644
+--- a/CLAUDE.md
++++ b/CLAUDE.md
+@@ -4,12 +4,12 @@ Claude Code bu dosyayı otomatik yükler; proje kuralları AGENTS.md'dedir:
+ 
+ @AGENTS.md
+ 
+-Ayrıntı ve okuma sırası: `README.md` → `docs/AI_WORKFLOW.md` → `recipes/README.md`.
++Ayrıntı ve okuma sırası: `README.md` → `docs/AI_WORKFLOW.md` → `docs/wiki/index.md`.
+ 
+ ## Seviye
+ <!-- Bu bölümü proje başında doldurun (seviye tanımları: şablon deposundaki docs/SEVIYE_TANIMLARI.md); doldurulana kadar şablon varsayılanı geçerlidir. -->
+-Seviye: S2 (N-Tier) · Risk: yok (şablon varsayılanı, henüz görüşme yapılmadı)
++Seviye: S3 (N-Tier) · Risk: yok (şablon varsayılanı, henüz görüşme yapılmadı)
+ Kapsam: <müşterinin asıl ihtiyacı>
+ İşin ihtiyaçları: e-posta bildirimi · içerik/görsel yükleme · deploy · yedek · spam koruması (her biri: var/yok/çözüm)
+-Yapmayacaklarımız: self-servis e-posta/hesap silme, soft delete, RowVersion, audit kullanıcı alanları, rol yönetimi (S3) · domain event, API versiyonlama, önbellek (Onion S4-S5)
+-Seviye atlama: `recipes/` altındaki reçeteyle; sıfırdan yazılmaz.
++Yapmayacaklarımız: domain event, API versiyonlama, önbellek (Onion S4-S5; N-Tier'de yok, taşıma gerekir)
++Seviye tavanı: N-Tier'in tavanı S3'tür; S4+ (domain event, API versiyonlama, önbellek) Onion şablonundadır ve geçiş reçete değil yeni projeye taşımadır.
+diff --git a/ProjectApp.API/Controllers/ProductsController.cs b/ProjectApp.API/Controllers/ProductsController.cs
+index e0a5717..1035b12 100644
+--- a/ProjectApp.API/Controllers/ProductsController.cs
++++ b/ProjectApp.API/Controllers/ProductsController.cs
+@@ -3,6 +3,7 @@ using ProjectApp.Services.Common.Pagination;
+ using ProjectApp.Services.Features.Products;
+ using ProjectApp.Services.Features.Products.Create;
+ using ProjectApp.Services.Features.Products.Update;
++using ProjectApp.Services.Features.Products.UpdateStock;
+ using Microsoft.AspNetCore.Authorization;
+ using Microsoft.AspNetCore.Mvc;
+ 
+@@ -34,6 +35,11 @@ public class ProductsController(IProductService productService) : CustomBaseCont
+     public async Task<IActionResult> Update(Guid id, UpdateProductRequest request, CancellationToken cancellationToken) =>
+         CreateActionResult(await productService.UpdateAsync(id, request, cancellationToken));
+ 
++    [Authorize(Roles = RoleNames.Admin)]
++    [HttpPatch("stock")]
++    public async Task<IActionResult> UpdateStock(UpdateProductStockRequest request, CancellationToken cancellationToken) =>
++        CreateActionResult(await productService.UpdateStockAsync(request, cancellationToken));
++
+     [Authorize(Roles = RoleNames.Admin)]
+     [HttpDelete("{id:guid}")]
+     public async Task<IActionResult> Delete(Guid id, CancellationToken cancellationToken) =>
+diff --git a/ProjectApp.API/Controllers/UsersController.cs b/ProjectApp.API/Controllers/UsersController.cs
+index 5e44f0d..580fe19 100644
+--- a/ProjectApp.API/Controllers/UsersController.cs
++++ b/ProjectApp.API/Controllers/UsersController.cs
+@@ -1,5 +1,6 @@
+ using Microsoft.AspNetCore.Authorization;
+ using Microsoft.AspNetCore.Mvc;
++using ProjectApp.Repositories.Identity;
+ using ProjectApp.Services.Features.Users;
+ using ProjectApp.Services.Features.Users.Dtos;
+ 
+@@ -19,4 +20,27 @@ public class UsersController(IUserService userService) : CustomBaseController
+     [HttpPost("change-password")]
+     public async Task<IActionResult> ChangePassword([FromBody] ChangePasswordRequest request, CancellationToken cancellationToken) =>
+         CreateActionResult(await userService.ChangePasswordAsync(request, cancellationToken));
++
++    [HttpPost("change-email")]
++    public async Task<IActionResult> ChangeEmail([FromBody] ChangeEmailRequest request, CancellationToken cancellationToken) =>
++        CreateActionResult(await userService.ChangeEmailAsync(request, cancellationToken));
++
++    [HttpPost("confirm-email-change")]
++    public async Task<IActionResult> ConfirmEmailChange([FromBody] ConfirmEmailChangeRequest request, CancellationToken cancellationToken) =>
++        CreateActionResult(await userService.ConfirmEmailChangeAsync(request, cancellationToken));
++
++    [HttpDelete("account")]
++    public async Task<IActionResult> DeleteAccount([FromBody] DeleteAccountRequest request, CancellationToken cancellationToken) =>
++        CreateActionResult(await userService.DeleteAccountAsync(request, cancellationToken));
++
++    // Yönetici uçları: hedef kullanıcı id'si yalnızca Admin rolüyle kabul edilir (self-servis uçlarında id alınmaz).
++    [Authorize(Roles = RoleNames.Admin)]
++    [HttpGet("{id:guid}/roles")]
++    public async Task<IActionResult> GetUserRoles(Guid id, CancellationToken cancellationToken) =>
++        CreateActionResult(await userService.GetUserRolesAsync(id, cancellationToken));
++
++    [Authorize(Roles = RoleNames.Admin)]
++    [HttpPut("{id:guid}/roles")]
++    public async Task<IActionResult> UpdateUserRoles(Guid id, [FromBody] UpdateUserRolesRequest request, CancellationToken cancellationToken) =>
++        CreateActionResult(await userService.UpdateUserRolesAsync(id, request, cancellationToken));
+ }
+diff --git a/ProjectApp.API/ExceptionHandlers/GlobalExceptionHandler.cs b/ProjectApp.API/ExceptionHandlers/GlobalExceptionHandler.cs
+index 4c46735..128551d 100644
+--- a/ProjectApp.API/ExceptionHandlers/GlobalExceptionHandler.cs
++++ b/ProjectApp.API/ExceptionHandlers/GlobalExceptionHandler.cs
+@@ -23,7 +23,7 @@ public class GlobalExceptionHandler(ILogger<GlobalExceptionHandler> logger) : IE
+             return true;
+         }
+ 
+-        // Eşzamanlılık çakışması (ör. Identity ConcurrencyStamp) -> 409
++        // Eşzamanlılık çakışması (RowVersion) -> 409
+         if (exception is DbUpdateConcurrencyException)
+         {
+             logger.LogWarning(exception, "Eşzamanlılık çakışması oluştu.");
+diff --git a/ProjectApp.API/Extensions/AuthenticationExtensions.cs b/ProjectApp.API/Extensions/AuthenticationExtensions.cs
+index bd97e0d..e608efb 100644
+--- a/ProjectApp.API/Extensions/AuthenticationExtensions.cs
++++ b/ProjectApp.API/Extensions/AuthenticationExtensions.cs
+@@ -75,7 +75,7 @@ public static class AuthenticationExtensions
+             };
+ 
+             // Access token anında iptali: token içindeki security stamp veritabanındakiyle karşılaştırılır.
+-            // Logout, şifre değişikliği ve şifre sıfırlama stamp'i yeniler; eski token'lar
++            // Logout, şifre/e-posta değişikliği, şifre sıfırlama ve hesap silme stamp'i yeniler; eski token'lar
+             // süresi dolmadan geçersiz olur. Bedeli: kimliği doğrulanmış her istekte kullanıcı başına bir okuma
+             // (aynı istekte servisler FindByIdAsync çağırırsa EF change tracker'dan döner, ek sorgu olmaz).
+             options.Events = new JwtBearerEvents
+@@ -92,7 +92,7 @@ public static class AuthenticationExtensions
+ 
+                     var userManager = context.HttpContext.RequestServices.GetRequiredService<UserManager<AppUser>>();
+                     var user = await userManager.FindByIdAsync(userId);
+-                    if (user is null || !string.Equals(user.SecurityStamp, tokenStamp, StringComparison.Ordinal))
++                    if (user is null || user.IsDeleted || !string.Equals(user.SecurityStamp, tokenStamp, StringComparison.Ordinal))
+                     {
+                         context.Fail("Oturum geçersiz kılınmış.");
+                     }
+diff --git a/ProjectApp.API/Extensions/CorsExtensions.cs b/ProjectApp.API/Extensions/CorsExtensions.cs
+index 5cbc5b4..144e485 100644
+--- a/ProjectApp.API/Extensions/CorsExtensions.cs
++++ b/ProjectApp.API/Extensions/CorsExtensions.cs
+@@ -1,12 +1,9 @@
+-﻿using Microsoft.AspNetCore.Cors.Infrastructure;
+-
+-namespace ProjectApp.API.Extensions;
++﻿namespace ProjectApp.API.Extensions;
+ 
+ /// <summary>
+ /// CORS politikaları.
+ /// Development: tüm kaynaklara izin verilir.
+-/// Diğer ortamlar: yalnızca "Cors:AllowedOrigins" listesindeki kaynaklar. Production'da liste boşsa uygulama açılır,
+-/// hiçbir kaynağa izin verilmez ve uyarı loglanır.
++/// Diğer ortamlar: yalnızca "Cors:AllowedOrigins" listesindeki kaynaklar. Production'da liste boşsa uygulama açılmaz.
+ /// Not: Yapılandırma dizileri indeks bazında birleştiği için geliştirme kaynakları (localhost) yalnızca
+ /// appsettings.Development.json içinde tutulur; appsettings.json'daki liste boş kalmalıdır.
+ /// </summary>
+@@ -26,13 +23,11 @@ public static class CorsExtensions
+             .Where(origin => !string.IsNullOrWhiteSpace(origin))
+             .ToArray();
+ 
+-        // Canlı ortamda izinli kaynak yoksa uygulama açılır ama hiçbir kaynağa izin verilmez (asla AllowAnyOrigin'e düşülmez);
+-        // seçenekler açılışta bir kez oluşturulduğu için uyarı da bir kez yazılır.
++        // Canlı ortamda izinli kaynak yoksa açılışta hata verilir; asla AllowAnyOrigin'e düşülmez.
+         if (environment.IsProduction() && allowedOrigins.Length == 0)
+         {
+-            services.AddOptions<CorsOptions>().Configure<ILoggerFactory>((_, loggerFactory) =>
+-                loggerFactory.CreateLogger(typeof(CorsExtensions)).LogWarning(
+-                    "Cors:AllowedOrigins boş; tarayıcıdan gelen çapraz kaynak (CORS) isteklerine izin verilmeyecek."));
++            throw new InvalidOperationException(
++                "Canlı ortamda (Production) CORS için en az bir izin verilen kaynak ('Cors:AllowedOrigins') tanımlanmalıdır.");
+         }
+ 
+         services.AddCors(options =>
+diff --git a/ProjectApp.API/Extensions/ForwardedHeadersExtensions.cs b/ProjectApp.API/Extensions/ForwardedHeadersExtensions.cs
+index 0b971f0..46b5e3f 100644
+--- a/ProjectApp.API/Extensions/ForwardedHeadersExtensions.cs
++++ b/ProjectApp.API/Extensions/ForwardedHeadersExtensions.cs
+@@ -9,9 +9,9 @@ public static class ForwardedHeadersExtensions
+     /// Reverse proxy arkasında gerçek istemci IP'sini (rate limiter için) okur.
+     /// ForwardedHeaders:KnownProxies (tek IP) ve ForwardedHeaders:KnownNetworks (CIDR, ör. 10.0.0.0/8) boşsa
+     /// yalnızca varsayılan loopback proxy'lere güvenilir.
+-    /// Production'da ikisi de boşsa uygulama açılır, proxy yok kabul edilir ve açılışta tek bir uyarı loglanır;
+-    /// yük dengeleyici arkasında tüm istemciler proxy IP'siyle görünür ve tek bir rate limit bölümünü paylaşır.
+-    /// Proxy'siz (doğrudan internete açık) dağıtımda ForwardedHeaders:NoProxy = true verilirse uyarı loglanmaz.
++    /// Production'da ikisi de boşsa uygulama açılmaz; aksi halde yük dengeleyici arkasında tüm istemciler
++    /// proxy IP'siyle görünür ve tek bir rate limit bölümünü paylaşır (auth limiti herkes için dakikada 15 olur).
++    /// Proxy'siz (doğrudan internete açık) dağıtımda ForwardedHeaders:NoProxy = true verilir.
+     /// </summary>
+     public static IServiceCollection AddForwardedHeadersSetup(
+         this IServiceCollection services,
+@@ -27,11 +27,9 @@ public static class ForwardedHeadersExtensions
+ 
+         if (environment.IsProduction() && !noProxy && proxies.Length == 0 && networks.Length == 0)
+         {
+-            // Seçenekler middleware kurulurken (açılışta) bir kez oluşturulur; uyarı da bir kez yazılır.
+-            services.AddOptions<ForwardedHeadersOptions>().Configure<ILoggerFactory>((_, loggerFactory) =>
+-                loggerFactory.CreateLogger(typeof(ForwardedHeadersExtensions)).LogWarning(
+-                    "ForwardedHeaders:KnownProxies ve ForwardedHeaders:KnownNetworks boş; reverse proxy yok kabul edildi. " +
+-                    "Proxy arkasındaysanız bu ayarları verin, değilseniz ForwardedHeaders:NoProxy = true ile bu uyarıyı kapatın."));
++            throw new InvalidOperationException(
++                "Canlı ortamda ForwardedHeaders:KnownProxies veya ForwardedHeaders:KnownNetworks tanımlanmalıdır " +
++                "(reverse proxy yoksa ForwardedHeaders:NoProxy = true verin).");
+         }
+ 
+         services.Configure<ForwardedHeadersOptions>(options =>
+@@ -61,4 +59,22 @@ public static class ForwardedHeadersExtensions
+ 
+         return services;
+     }
++
++    /// <summary>
++    /// Production'da host başlığı filtrelemesinin açık olduğunu doğrular ('AllowedHosts: *' kabul edilmez).
++    /// </summary>
++    public static IServiceCollection ValidateAllowedHosts(
++        this IServiceCollection services,
++        IConfiguration configuration,
++        IHostEnvironment environment)
++    {
++        var allowedHosts = configuration["AllowedHosts"];
++        if (environment.IsProduction() && (string.IsNullOrWhiteSpace(allowedHosts) || allowedHosts.Trim() == "*"))
++        {
++            throw new InvalidOperationException(
++                "Canlı ortamda AllowedHosts '*' olamaz; API alan adını verin (ör. AllowedHosts=api.alanadiniz.com, birden fazlası ';' ile).");
++        }
++
++        return services;
++    }
+ }
+diff --git a/ProjectApp.API/Extensions/SerilogExtensions.cs b/ProjectApp.API/Extensions/SerilogExtensions.cs
+index 2607261..cdba781 100644
+--- a/ProjectApp.API/Extensions/SerilogExtensions.cs
++++ b/ProjectApp.API/Extensions/SerilogExtensions.cs
+@@ -19,13 +19,13 @@ public static class SerilogExtensions
+                 .Enrich.FromLogContext()
+                 .WriteTo.Console(
+                     formatProvider: CultureInfo.InvariantCulture,
+-                    outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] {SourceContext}{NewLine}{Message:lj}{NewLine}{Exception}")
++                    outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] {SourceContext} {CorrelationId}{NewLine}{Message:lj}{NewLine}{Exception}")
+                 .WriteTo.File(
+                     path: "logs/log-.txt",
+                     formatProvider: CultureInfo.InvariantCulture,
+                     rollingInterval: RollingInterval.Day,
+                     retainedFileCountLimit: 30,
+-                    outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} [{Level:u3}] {SourceContext} {Message:lj}{NewLine}{Exception}");
++                    outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} [{Level:u3}] {SourceContext} [{CorrelationId}] {Message:lj}{NewLine}{Exception}");
+         });
+ 
+         return builder;
+diff --git a/ProjectApp.API/Program.cs b/ProjectApp.API/Program.cs
+index 403cf68..2443eb9 100644
+--- a/ProjectApp.API/Program.cs
++++ b/ProjectApp.API/Program.cs
+@@ -37,8 +37,9 @@ builder.Services.AddCorsPolicy(builder.Configuration, builder.Environment);
+ // ─── Rate Limiting ─────────────────────────────────────────────────────────
+ builder.Services.AddRateLimiting(builder.Configuration);
+ 
+-// ─── Reverse Proxy (X-Forwarded-*) ─────────────────────────────────────────
++// ─── Reverse Proxy (X-Forwarded-*) ve AllowedHosts ─────────────────────────
+ builder.Services.AddForwardedHeadersSetup(builder.Configuration, builder.Environment);
++builder.Services.ValidateAllowedHosts(builder.Configuration, builder.Environment);
+ 
+ // ─── Health Checks ─────────────────────────────────────────────────────────
+ builder.Services.AddHealthChecksSetup(builder.Configuration);
+@@ -50,6 +51,9 @@ var app = builder.Build();
+ // ─── Reverse Proxy Başlıkları (en başta olmalı) ───────────────────────────
+ app.UseForwardedHeaders();
+ 
++// ─── Korelasyon Kimliği (X-Correlation-Id; istek logundan önce olmalı) ────
++app.UseCorrelationId();
++
+ // ─── Serilog İstek Loglama ──────────────────────────────────────────────
+ // Exception handler'ın dışında olmalı; aksi halde handler'ın döndüğü 409/499 yanıtları 500 olarak loglanır.
+ app.UseSerilogRequestLogging();
+diff --git a/ProjectApp.API/ProjectApp.API.http b/ProjectApp.API/ProjectApp.API.http
+index 069e692..7c5333e 100644
+--- a/ProjectApp.API/ProjectApp.API.http
++++ b/ProjectApp.API/ProjectApp.API.http
+@@ -64,6 +64,24 @@ Authorization: Bearer {{adminToken}}
+ GET {{baseUrl}}/users/me
+ Authorization: Bearer {{adminToken}}
+ 
++###
++# Rol yönetimi (yalnızca Admin): targetUserId yerine kayıt yanıtındaki data.id değerini yazın.
++@targetUserId = 00000000-0000-0000-0000-000000000000
++
++### Kullanıcının rollerini getir (yoksa veya silinmişse 404)
++GET {{baseUrl}}/users/{{targetUserId}}/roles
++Authorization: Bearer {{adminToken}}
++
++### Kullanıcının rollerini değiştir (liste tamamen yerine geçer; olmayan rol / boş liste / son Admin'den Admin kaldırma 400)
++# Başarılıysa 204: hedef kullanıcının eski token'ları 401 olur, yeni rolleri tekrar girişte alır.
++PUT {{baseUrl}}/users/{{targetUserId}}/roles
++Authorization: Bearer {{adminToken}}
++Content-Type: application/json
++
++{
++  "roles": ["User", "Admin"]
++}
++
+ ### Kategori oluştur (yalnızca Admin)
+ # @name createCategory
+ POST {{baseUrl}}/categories
+@@ -77,16 +95,18 @@ Content-Type: application/json
+ ###
+ @categoryId = {{createCategory.response.body.$.data.id}}
+ 
+-### Kategori getir
++### Kategori getir (rowVersion güncelleme için gerekli)
++# @name getCategory
+ GET {{baseUrl}}/categories/{{categoryId}}
+ 
+-### Kategori güncelle
++### Kategori güncelle (eski rowVersion gönderilirse 409 döner)
+ PUT {{baseUrl}}/categories/{{categoryId}}
+ Authorization: Bearer {{adminToken}}
+ Content-Type: application/json
+ 
+ {
+-  "name": "Kırtasiye Ürünleri"
++  "name": "Kırtasiye Ürünleri",
++  "rowVersion": "{{getCategory.response.body.$.data.rowVersion}}"
+ }
+ 
+ ### Ürün oluştur (yalnızca Admin)
+@@ -106,6 +126,7 @@ Content-Type: application/json
+ @productId = {{createProduct.response.body.$.data.id}}
+ 
+ ### Ürün getir
++# @name getProduct
+ GET {{baseUrl}}/products/{{productId}}
+ 
+ ### Ürün güncelle
+@@ -117,7 +138,23 @@ Content-Type: application/json
+   "name": "Kurşun Kalem HB",
+   "price": 14,
+   "stock": 90,
+-  "categoryId": "{{categoryId}}"
++  "categoryId": "{{categoryId}}",
++  "rowVersion": "{{getProduct.response.body.$.data.rowVersion}}"
++}
++
++### Ürünü yeniden oku (güncelleme RowVersion'ı değiştirdi)
++# @name getProductAfterUpdate
++GET {{baseUrl}}/products/{{productId}}
++
++### Stok güncelle (yeni stok miktarı; RowVersion güncel okumadan gelir, eskiyse 409)
++PATCH {{baseUrl}}/products/stock
++Authorization: Bearer {{adminToken}}
++Content-Type: application/json
++
++{
++  "productId": "{{productId}}",
++  "quantity": 75,
++  "rowVersion": "{{getProductAfterUpdate.response.body.$.data.rowVersion}}"
+ }
+ 
+ ### Ürün listesi
+diff --git a/ProjectApp.API/Services/CurrentUser.cs b/ProjectApp.API/Services/CurrentUser.cs
+index b52e069..3f970b5 100644
+--- a/ProjectApp.API/Services/CurrentUser.cs
++++ b/ProjectApp.API/Services/CurrentUser.cs
+@@ -8,7 +8,7 @@ public class CurrentUser(IHttpContextAccessor httpContextAccessor) : ICurrentUse
+ {
+     // Her erişimde güncel HttpContext.User okunur. Kurucuda sabitlenirse, servis UseAuthentication()
+     // öncesinde çözüldüğünde (ör. erken bir middleware) anonim principal'da takılı kalır ve
+-    // kullanıcı kimliği sessizce null döner.
++    // CreatedBy/UpdatedBy sessizce null yazılır.
+     private ClaimsPrincipal? User => httpContextAccessor.HttpContext?.User;
+ 
+     public Guid? UserId =>
+@@ -17,4 +17,6 @@ public class CurrentUser(IHttpContextAccessor httpContextAccessor) : ICurrentUse
+     public string? UserName => User?.FindFirstValue(ClaimTypes.Name);
+ 
+     public bool IsAuthenticated => User?.Identity?.IsAuthenticated ?? false;
++
++    public bool IsInRole(string role) => IsAuthenticated && User!.IsInRole(role);
+ }
+diff --git a/ProjectApp.API/appsettings.Production.json b/ProjectApp.API/appsettings.Production.json
+index ee35fe6..7ab76ba 100644
+--- a/ProjectApp.API/appsettings.Production.json
++++ b/ProjectApp.API/appsettings.Production.json
+@@ -11,7 +11,7 @@
+       }
+     }
+   },
+-  "_AllowedHosts_comment": "'*' kabul edilir; host başlığını kısıtlamak için ortam değişkeni AllowedHosts=api.alanadiniz.com verin.",
++  "_AllowedHosts_comment": "Production'da '*' kabul edilmez; ortam değişkeni AllowedHosts=api.alanadiniz.com ile verin.",
+   "AllowedHosts": "*",
+   "ConnectionStrings": {
+     "_comment": "Ortam değişkeni ConnectionStrings__DefaultConnection ile verin; boş kalırsa uygulama açılmaz.",
+@@ -25,11 +25,11 @@
+     "RefreshTokenDays": 7
+   },
+   "Cors": {
+-    "_comment": "Boş bırakıldı: ortam değişkeni Cors__AllowedOrigins__0=https://app.alanadiniz.com verilmezse uygulama açılır ama hiçbir kaynağa izin verilmez (açılışta uyarı loglanır).",
++    "_comment": "Boş bırakıldı: ortam değişkeni Cors__AllowedOrigins__0=https://app.alanadiniz.com verilmezse uygulama açılmaz (yer tutucu adresle sessizce açılmasın).",
+     "AllowedOrigins": []
+   },
+   "ForwardedHeaders": {
+-    "_comment": "Reverse proxy IP'leri (KnownProxies) veya ağları (KnownNetworks, CIDR). Hiçbiri verilmezse proxy yok kabul edilir ve açılışta uyarı loglanır; NoProxy=true uyarıyı kapatır.",
++    "_comment": "Reverse proxy IP'leri (KnownProxies) veya ağları (KnownNetworks, CIDR). Proxy yoksa NoProxy=true. Hiçbiri verilmezse uygulama açılmaz.",
+     "KnownProxies": [],
+     "KnownNetworks": [],
+     "NoProxy": false
+diff --git a/ProjectApp.Repositories/Categories/CategoryConfiguration.cs b/ProjectApp.Repositories/Categories/CategoryConfiguration.cs
+index bfa5c38..42a09c0 100644
+--- a/ProjectApp.Repositories/Categories/CategoryConfiguration.cs
++++ b/ProjectApp.Repositories/Categories/CategoryConfiguration.cs
+@@ -8,7 +8,8 @@ public class CategoryConfiguration : IEntityTypeConfiguration<Category>
+     public void Configure(EntityTypeBuilder<Category> builder)
+     {
+         builder.HasKey(x => x.Id);
++        builder.Property(x => x.RowVersion).IsRowVersion();
+         builder.Property(x => x.Name).IsRequired().HasMaxLength(100);
+-        builder.HasIndex(x => x.Name).IsUnique();
++        builder.HasIndex(x => x.Name).IsUnique().HasFilter("[IsDeleted] = 0");
+     }
+ }
+diff --git a/ProjectApp.Repositories/Common/AuditableEntity.cs b/ProjectApp.Repositories/Common/AuditableEntity.cs
+index 25c2122..000f949 100644
+--- a/ProjectApp.Repositories/Common/AuditableEntity.cs
++++ b/ProjectApp.Repositories/Common/AuditableEntity.cs
+@@ -1,11 +1,17 @@
+ namespace ProjectApp.Repositories;
+ 
+ /// <summary>
+-/// Oluşturulma/güncellenme zamanlarını içeren temel entity.
++/// Denetim alanları ve soft delete içeren temel entity.
+ /// Alanlar <c>AuditDbContextInterceptor</c> tarafından otomatik doldurulur.
+ /// </summary>
+-public abstract class AuditableEntity : BaseEntity
++public abstract class AuditableEntity : BaseEntity, IAuditEntity
+ {
+     public DateTime Created { get; set; }
+     public DateTime? Updated { get; set; }
+-}
+\ No newline at end of file
++    public Guid? CreatedBy { get; set; }
++    public Guid? UpdatedBy { get; set; }
++    public bool IsDeleted { get; set; }
++
++    /// <summary>Optimistic concurrency token (SQL Server rowversion).</summary>
++    public byte[] RowVersion { get; set; } = [];
++}
+diff --git a/ProjectApp.Repositories/Common/ICurrentUserService.cs b/ProjectApp.Repositories/Common/ICurrentUserService.cs
+index 19439cf..76dd181 100644
+--- a/ProjectApp.Repositories/Common/ICurrentUserService.cs
++++ b/ProjectApp.Repositories/Common/ICurrentUserService.cs
+@@ -12,4 +12,10 @@ public interface ICurrentUserService
+     string? UserName { get; }
+ 
+     bool IsAuthenticated { get; }
++
++    /// <summary>
++    /// İstek sahibinin JWT'sinde verilen rol var mı (rol bazlı veri kapsamı için). Anonim istekte false döner.
++    /// Roller token'dan okunur; rol değişikliği security stamp'i yenilediği için eski token zaten geçersizdir.
++    /// </summary>
++    bool IsInRole(string role);
+ }
+diff --git a/ProjectApp.Repositories/Context/AppDbContext.cs b/ProjectApp.Repositories/Context/AppDbContext.cs
+index 5d9a090..86a5673 100644
+--- a/ProjectApp.Repositories/Context/AppDbContext.cs
++++ b/ProjectApp.Repositories/Context/AppDbContext.cs
+@@ -1,3 +1,4 @@
++using System.Linq.Expressions;
+ using ProjectApp.Repositories.Categories;
+ using ProjectApp.Repositories.Identity;
+ using ProjectApp.Repositories.Products;
+@@ -19,5 +20,27 @@ public class AppDbContext(DbContextOptions<AppDbContext> options)
+         base.OnModelCreating(builder);
+ 
+         builder.ApplyConfigurationsFromAssembly(typeof(RepositoryAssembly).Assembly);
++
++        // AppUser Soft Delete global query filter
++        builder.Entity<AppUser>().HasQueryFilter(u => !u.IsDeleted);
++
++        ApplySoftDeleteQueryFilter(builder);
++    }
++
++    // IAuditEntity uygulayan tüm entity'ler için: x => !x.IsDeleted
++    private static void ApplySoftDeleteQueryFilter(ModelBuilder builder)
++    {
++        foreach (var entityType in builder.Model.GetEntityTypes())
++        {
++            if (!typeof(IAuditEntity).IsAssignableFrom(entityType.ClrType)) continue;
++
++            if (entityType.IsOwned()) continue;
++
++            var parameter = Expression.Parameter(entityType.ClrType, "x");
++            var isDeletedProperty = Expression.Property(parameter, nameof(IAuditEntity.IsDeleted));
++            var filter = Expression.Lambda(Expression.Not(isDeletedProperty), parameter);
++
++            builder.Entity(entityType.ClrType).HasQueryFilter(filter);
++        }
+     }
+ }
+diff --git a/ProjectApp.Repositories/Extensions/RepositoryExtensions.cs b/ProjectApp.Repositories/Extensions/RepositoryExtensions.cs
+index 02894b8..cf937e4 100644
+--- a/ProjectApp.Repositories/Extensions/RepositoryExtensions.cs
++++ b/ProjectApp.Repositories/Extensions/RepositoryExtensions.cs
+@@ -16,7 +16,7 @@ public static class RepositoryExtensions
+             throw new InvalidOperationException("ConnectionStrings:DefaultConnection tanımlı değil veya boş. Ortam değişkeni ConnectionStrings__DefaultConnection ile verin.");
+         }
+ 
+-        // interceptor TimeProvider'a bağımlı olduğu için DI üzerinden (scoped) çözülür
++        // interceptor ICurrentUserService'e bağımlı olduğu için DI üzerinden (scoped) çözülür
+         services.AddScoped<AuditDbContextInterceptor>();
+ 
+         services.AddDbContext<AppDbContext>((serviceProvider, options) =>
+diff --git a/ProjectApp.Repositories/Identity/AppUser.cs b/ProjectApp.Repositories/Identity/AppUser.cs
+index f7bba9c..3568d5b 100644
+--- a/ProjectApp.Repositories/Identity/AppUser.cs
++++ b/ProjectApp.Repositories/Identity/AppUser.cs
+@@ -9,4 +9,8 @@ public class AppUser : IdentityUser<Guid>
+     public string? RefreshToken { get; set; }
+ 
+     public DateTime? RefreshTokenExpiryTime { get; set; }
++
++    public bool IsDeleted { get; set; }
++
++    public DateTime? DeletedAt { get; set; }
+ }
+diff --git a/ProjectApp.Repositories/Interceptors/AuditDbContextInterceptor.cs b/ProjectApp.Repositories/Interceptors/AuditDbContextInterceptor.cs
+index bf35579..5ac3ebe 100644
+--- a/ProjectApp.Repositories/Interceptors/AuditDbContextInterceptor.cs
++++ b/ProjectApp.Repositories/Interceptors/AuditDbContextInterceptor.cs
+@@ -3,18 +3,39 @@ using Microsoft.EntityFrameworkCore.Diagnostics;
+ 
+ namespace ProjectApp.Repositories.Interceptors;
+ 
+-public class AuditDbContextInterceptor(TimeProvider timeProvider) : SaveChangesInterceptor
++public class AuditDbContextInterceptor(ICurrentUserService currentUserService, TimeProvider timeProvider) : SaveChangesInterceptor
+ {
+-    private static void AddBehavior(DbContext context, AuditableEntity auditEntity, DateTime now)
++    private static readonly Dictionary<EntityState, Action<DbContext, IAuditEntity, Guid?, DateTime>> Behaviors = new()
++    {
++        { EntityState.Added, AddBehavior },
++        { EntityState.Modified, ModifiedBehavior },
++        { EntityState.Deleted, DeletedBehavior }
++    };
++
++
++    private static void AddBehavior(DbContext context, IAuditEntity auditEntity, Guid? userId, DateTime now)
+     {
+         auditEntity.Created = now;
++        auditEntity.CreatedBy = userId;
+         context.Entry(auditEntity).Property(x => x.Updated).IsModified = false;
++        context.Entry(auditEntity).Property(x => x.UpdatedBy).IsModified = false;
+     }
+ 
+-    private static void ModifiedBehavior(DbContext context, AuditableEntity auditEntity, DateTime now)
++    private static void ModifiedBehavior(DbContext context, IAuditEntity auditEntity, Guid? userId, DateTime now)
+     {
+         context.Entry(auditEntity).Property(x => x.Created).IsModified = false;
++        context.Entry(auditEntity).Property(x => x.CreatedBy).IsModified = false;
+         auditEntity.Updated = now;
++        auditEntity.UpdatedBy = userId;
++    }
++
++    // soft delete: fiziksel silme yerine IsDeleted = true olarak güncellenir
++    private static void DeletedBehavior(DbContext context, IAuditEntity auditEntity, Guid? userId, DateTime now)
++    {
++        context.Entry(auditEntity).State = EntityState.Modified;
++        auditEntity.IsDeleted = true;
++
++        ModifiedBehavior(context, auditEntity, userId, now);
+     }
+ 
+     public override InterceptionResult<int> SavingChanges(DbContextEventData eventData,
+@@ -36,19 +57,18 @@ public class AuditDbContextInterceptor(TimeProvider timeProvider) : SaveChangesI
+ 
+     private void ApplyAuditBehaviors(DbContext context)
+     {
++        var userId = currentUserService.UserId;
+         var now = timeProvider.GetUtcNow().UtcDateTime;
+ 
+-        foreach (var entityEntry in context.ChangeTracker.Entries<AuditableEntity>())
++        foreach (var entityEntry in context.ChangeTracker.Entries().ToList())
+         {
+-            switch (entityEntry.State)
+-            {
+-                case EntityState.Added:
+-                    AddBehavior(context, entityEntry.Entity, now);
+-                    break;
+-                case EntityState.Modified:
+-                    ModifiedBehavior(context, entityEntry.Entity, now);
+-                    break;
+-            }
++            if (entityEntry.Entity is not IAuditEntity auditEntity) continue;
++
++
++            if (entityEntry.State is not (EntityState.Added or EntityState.Modified or EntityState.Deleted)) continue;
++
++
++            Behaviors[entityEntry.State](context, auditEntity, userId, now);
+         }
+     }
+ }
+diff --git a/ProjectApp.Repositories/Products/ProductConfiguration.cs b/ProjectApp.Repositories/Products/ProductConfiguration.cs
+index 6c5fa31..6d4130e 100644
+--- a/ProjectApp.Repositories/Products/ProductConfiguration.cs
++++ b/ProjectApp.Repositories/Products/ProductConfiguration.cs
+@@ -8,8 +8,9 @@ public class ProductConfiguration : IEntityTypeConfiguration<Product>
+     public void Configure(EntityTypeBuilder<Product> builder)
+     {
+         builder.HasKey(x => x.Id);
++        builder.Property(x => x.RowVersion).IsRowVersion();
+         builder.Property(x => x.Name).IsRequired().HasMaxLength(150);
+-        builder.HasIndex(x => x.Name).IsUnique();
++        builder.HasIndex(x => x.Name).IsUnique().HasFilter("[IsDeleted] = 0");
+         builder.Property(x => x.Price).IsRequired().HasColumnType("decimal(18,2)");
+         builder.Property(x => x.Stock).IsRequired();
+         builder.Property(x => x.CategoryId).IsRequired();
+diff --git a/ProjectApp.Services/Features/Auth/AuthService.cs b/ProjectApp.Services/Features/Auth/AuthService.cs
+index 4ee07f1..8efd8c5 100644
+--- a/ProjectApp.Services/Features/Auth/AuthService.cs
++++ b/ProjectApp.Services/Features/Auth/AuthService.cs
+@@ -24,7 +24,7 @@ public class AuthService(
+     public async Task<ServiceResult<TokenResponse>> LoginAsync(LoginRequest request, CancellationToken cancellationToken = default)
+     {
+         var user = await userManager.FindByEmailAsync(request.Email);
+-        if (user is null)
++        if (user is null || user.IsDeleted)
+         {
+             // E-posta loglanmaz (kişisel veri); yalnızca olay kaydedilir.
+             logger.LogWarning("Bilinmeyen veya silinmiş hesapla başarısız giriş denemesi.");
+@@ -141,6 +141,7 @@ public class AuthService(
+ 
+         var user = await userManager.FindByIdAsync(userId.ToString());
+         if (user is null ||
++            user.IsDeleted ||
+             !CryptographicOperations.FixedTimeEquals(
+                 Encoding.UTF8.GetBytes(user.RefreshToken ?? string.Empty),
+                 Encoding.UTF8.GetBytes(TokenService.HashToken(request.RefreshToken))) ||
+@@ -202,7 +203,7 @@ public class AuthService(
+         }
+ 
+         var user = await userManager.FindByIdAsync(currentUserService.UserId.Value.ToString());
+-        if (user is null)
++        if (user is null || user.IsDeleted)
+         {
+             return ServiceResult.Fail("Kullanıcı bulunamadı.", HttpStatusCode.NotFound);
+         }
+@@ -219,7 +220,7 @@ public class AuthService(
+     public async Task<ServiceResult> ForgotPasswordAsync(ForgotPasswordRequest request, CancellationToken cancellationToken = default)
+     {
+         var user = await userManager.FindByEmailAsync(request.Email);
+-        if (user is not null)
++        if (user is not null && !user.IsDeleted)
+         {
+             var resetToken = await userManager.GeneratePasswordResetTokenAsync(user);
+             logger.LogInformation(
+@@ -240,7 +241,7 @@ public class AuthService(
+     public async Task<ServiceResult> ResetPasswordAsync(ResetPasswordRequest request, CancellationToken cancellationToken = default)
+     {
+         var user = await userManager.FindByEmailAsync(request.Email);
+-        if (user is null)
++        if (user is null || user.IsDeleted)
+         {
+             return ServiceResult.Fail("Şifre sıfırlama işlemi başarısız oldu. Bilgilerinizi kontrol ediniz.", HttpStatusCode.BadRequest);
+         }
+@@ -269,7 +270,7 @@ public class AuthService(
+         }
+ 
+         var user = await userManager.FindByIdAsync(currentUserService.UserId.Value.ToString());
+-        if (user is null)
++        if (user is null || user.IsDeleted)
+         {
+             return ServiceResult<CurrentUserResponse>.Fail("Kullanıcı bulunamadı.", HttpStatusCode.NotFound);
+         }
+diff --git a/ProjectApp.Services/Features/Categories/CategoryService.cs b/ProjectApp.Services/Features/Categories/CategoryService.cs
+index 6d76a3a..14fbadf 100644
+--- a/ProjectApp.Services/Features/Categories/CategoryService.cs
++++ b/ProjectApp.Services/Features/Categories/CategoryService.cs
+@@ -78,6 +78,7 @@ public class CategoryService(
+         }
+ 
+         category = mapper.Map(request, category);
++        context.Entry(category).Property(x => x.RowVersion).OriginalValue = request.RowVersion;
+         await context.SaveChangesAsync(cancellationToken);
+ 
+         return ServiceResult.Success(HttpStatusCode.NoContent);
+diff --git a/ProjectApp.Services/Features/Categories/Dto/CategoryDto.cs b/ProjectApp.Services/Features/Categories/Dto/CategoryDto.cs
+index 4ebbb2a..b871d37 100644
+--- a/ProjectApp.Services/Features/Categories/Dto/CategoryDto.cs
++++ b/ProjectApp.Services/Features/Categories/Dto/CategoryDto.cs
+@@ -2,6 +2,6 @@
+ 
+ namespace ProjectApp.Services.Features.Categories.Dto;
+ 
+-public record CategoryDto(Guid Id, string Name);
++public record CategoryDto(Guid Id, string Name, byte[] RowVersion);
+ 
+ public record CategoryWithProductsDto(Guid Id, string Name, List<ProductDto> Products);
+diff --git a/ProjectApp.Services/Features/Categories/Update/UpdateCategoryRequest.cs b/ProjectApp.Services/Features/Categories/Update/UpdateCategoryRequest.cs
+index 618b38a..75b7fd4 100644
+--- a/ProjectApp.Services/Features/Categories/Update/UpdateCategoryRequest.cs
++++ b/ProjectApp.Services/Features/Categories/Update/UpdateCategoryRequest.cs
+@@ -1,3 +1,3 @@
+ namespace ProjectApp.Services.Features.Categories.Update;
+ 
+-public record UpdateCategoryRequest(string Name);
++public record UpdateCategoryRequest(string Name, byte[] RowVersion);
+diff --git a/ProjectApp.Services/Features/Categories/Update/UpdateCategoryRequestValidator.cs b/ProjectApp.Services/Features/Categories/Update/UpdateCategoryRequestValidator.cs
+index a83a88a..9ba7fac 100644
+--- a/ProjectApp.Services/Features/Categories/Update/UpdateCategoryRequestValidator.cs
++++ b/ProjectApp.Services/Features/Categories/Update/UpdateCategoryRequestValidator.cs
+@@ -9,5 +9,9 @@ public class UpdateCategoryRequestValidator : AbstractValidator<UpdateCategoryRe
+         RuleFor(x => x.Name)
+             .NotEmpty().WithMessage("Kategori ismi boş olamaz.")
+             .Length(3, 100).WithMessage("Kategori adı 3 ile 100 karakter arasında olmalıdır.");
++
++        // İyimser eşzamanlılık: istemci GET ile aldığı RowVersion'ı geri gönderir; kayıt bu arada değiştiyse 409 döner.
++        RuleFor(x => x.RowVersion)
++            .NotEmpty().WithMessage("RowVersion gönderilmelidir (kaydı önce okuyup dönen değeri kullanın).");
+     }
+ }
+diff --git a/ProjectApp.Services/Features/Products/IProductService.cs b/ProjectApp.Services/Features/Products/IProductService.cs
+index da6d484..9e992c2 100644
+--- a/ProjectApp.Services/Features/Products/IProductService.cs
++++ b/ProjectApp.Services/Features/Products/IProductService.cs
+@@ -1,6 +1,7 @@
+ using ProjectApp.Services.Common.Pagination;
+ using ProjectApp.Services.Features.Products.Create;
+ using ProjectApp.Services.Features.Products.Update;
++using ProjectApp.Services.Features.Products.UpdateStock;
+ 
+ namespace ProjectApp.Services.Features.Products;
+ 
+@@ -11,5 +12,6 @@ public interface IProductService
+     Task<ServiceResult<PagedResult<ProductDto>>> GetPagedAllListAsync(PagedRequest request, CancellationToken cancellationToken = default);
+     Task<ServiceResult<CreateProductResponse>> CreateAsync(CreateProductRequest request, CancellationToken cancellationToken = default);
+     Task<ServiceResult> UpdateAsync(Guid id, UpdateProductRequest request, CancellationToken cancellationToken = default);
++    Task<ServiceResult> UpdateStockAsync(UpdateProductStockRequest request, CancellationToken cancellationToken = default);
+     Task<ServiceResult> DeleteAsync(Guid id, CancellationToken cancellationToken = default);
+ }
+diff --git a/ProjectApp.Services/Features/Products/ProductDto.cs b/ProjectApp.Services/Features/Products/ProductDto.cs
+index f9a125f..1668a9d 100644
+--- a/ProjectApp.Services/Features/Products/ProductDto.cs
++++ b/ProjectApp.Services/Features/Products/ProductDto.cs
+@@ -1,3 +1,3 @@
+ ﻿namespace ProjectApp.Services.Features.Products;
+ 
+-public record ProductDto(Guid Id, string Name, decimal Price, int Stock, Guid CategoryId);
++public record ProductDto(Guid Id, string Name, decimal Price, int Stock, Guid CategoryId, byte[] RowVersion);
+diff --git a/ProjectApp.Services/Features/Products/ProductService.cs b/ProjectApp.Services/Features/Products/ProductService.cs
+index 12eb71c..cfd6a13 100644
+--- a/ProjectApp.Services/Features/Products/ProductService.cs
++++ b/ProjectApp.Services/Features/Products/ProductService.cs
+@@ -8,6 +8,7 @@ using ProjectApp.Repositories.Products;
+ using ProjectApp.Services.Common.Pagination;
+ using ProjectApp.Services.Features.Products.Create;
+ using ProjectApp.Services.Features.Products.Update;
++using ProjectApp.Services.Features.Products.UpdateStock;
+ 
+ namespace ProjectApp.Services.Features.Products;
+ 
+@@ -86,6 +87,23 @@ public class ProductService(
+         }
+ 
+         product = mapper.Map(request, product);
++        context.Entry(product).Property(x => x.RowVersion).OriginalValue = request.RowVersion;
++        await context.SaveChangesAsync(cancellationToken);
++
++        return ServiceResult.Success(HttpStatusCode.NoContent);
++    }
++
++    public async Task<ServiceResult> UpdateStockAsync(UpdateProductStockRequest request, CancellationToken cancellationToken = default)
++    {
++        var product = await context.Products.FindAsync([request.ProductId], cancellationToken);
++        if (product is null)
++        {
++            return ServiceResult.Fail("Ürün bulunamadı.", HttpStatusCode.NotFound);
++        }
++
++        product.Stock = request.Quantity;
++        // Eşzamanlı iki stok yazımında son yazanın sessizce kazanmasını önler: istemcinin gördüğü sürüm esas alınır (409).
++        context.Entry(product).Property(x => x.RowVersion).OriginalValue = request.RowVersion;
+         await context.SaveChangesAsync(cancellationToken);
+ 
+         return ServiceResult.Success(HttpStatusCode.NoContent);
+diff --git a/ProjectApp.Services/Features/Products/Update/UpdateProductRequest.cs b/ProjectApp.Services/Features/Products/Update/UpdateProductRequest.cs
+index 19b7fd2..2657ede 100644
+--- a/ProjectApp.Services/Features/Products/Update/UpdateProductRequest.cs
++++ b/ProjectApp.Services/Features/Products/Update/UpdateProductRequest.cs
+@@ -1,3 +1,3 @@
+ namespace ProjectApp.Services.Features.Products.Update;
+ 
+-public record UpdateProductRequest(string Name, decimal Price, int Stock, Guid CategoryId);
++public record UpdateProductRequest(string Name, decimal Price, int Stock, Guid CategoryId, byte[] RowVersion);
+diff --git a/ProjectApp.Services/Features/Products/Update/UpdateProductRequestValidator.cs b/ProjectApp.Services/Features/Products/Update/UpdateProductRequestValidator.cs
+index f2247c9..23a4700 100644
+--- a/ProjectApp.Services/Features/Products/Update/UpdateProductRequestValidator.cs
++++ b/ProjectApp.Services/Features/Products/Update/UpdateProductRequestValidator.cs
+@@ -19,5 +19,9 @@ public class UpdateProductRequestValidator : AbstractValidator<UpdateProductRequ
+ 
+         RuleFor(x => x.CategoryId)
+             .NotEmpty().WithMessage("Kategori seçilmelidir.");
++
++        // İyimser eşzamanlılık: istemci GET ile aldığı RowVersion'ı geri gönderir; kayıt bu arada değiştiyse 409 döner.
++        RuleFor(x => x.RowVersion)
++            .NotEmpty().WithMessage("RowVersion gönderilmelidir (kaydı önce okuyup dönen değeri kullanın).");
+     }
+ }
+diff --git a/ProjectApp.Services/Features/Users/IUserService.cs b/ProjectApp.Services/Features/Users/IUserService.cs
+index 708e2c7..a4da34c 100644
+--- a/ProjectApp.Services/Features/Users/IUserService.cs
++++ b/ProjectApp.Services/Features/Users/IUserService.cs
+@@ -7,4 +7,11 @@ public interface IUserService
+     Task<ServiceResult<UserProfileDto>> GetCurrentUserProfileAsync(CancellationToken cancellationToken = default);
+     Task<ServiceResult> UpdateProfileAsync(UpdateProfileRequest request, CancellationToken cancellationToken = default);
+     Task<ServiceResult> ChangePasswordAsync(ChangePasswordRequest request, CancellationToken cancellationToken = default);
++    Task<ServiceResult> ChangeEmailAsync(ChangeEmailRequest request, CancellationToken cancellationToken = default);
++    Task<ServiceResult> ConfirmEmailChangeAsync(ConfirmEmailChangeRequest request, CancellationToken cancellationToken = default);
++    Task<ServiceResult> DeleteAccountAsync(DeleteAccountRequest request, CancellationToken cancellationToken = default);
++
++    // Yönetici (Admin) uçları: hedef kullanıcı route'taki id ile seçilir; yetki controller'da rol ile denetlenir.
++    Task<ServiceResult<UserRolesDto>> GetUserRolesAsync(Guid userId, CancellationToken cancellationToken = default);
++    Task<ServiceResult> UpdateUserRolesAsync(Guid userId, UpdateUserRolesRequest request, CancellationToken cancellationToken = default);
+ }
+diff --git a/ProjectApp.Services/Features/Users/UserService.cs b/ProjectApp.Services/Features/Users/UserService.cs
+index c4e8254..e74678d 100644
+--- a/ProjectApp.Services/Features/Users/UserService.cs
++++ b/ProjectApp.Services/Features/Users/UserService.cs
+@@ -1,19 +1,29 @@
+ using System.Net;
+ using Microsoft.AspNetCore.Identity;
++using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.Logging;
+ using ProjectApp.Repositories;
+ using ProjectApp.Repositories.Identity;
++using ProjectApp.Services.Common.Email;
+ using ProjectApp.Services.Features.Users.Dtos;
+ using ProjectApp.Services.Identity;
+ 
+ namespace ProjectApp.Services.Features.Users;
+ 
+ public class UserService(
++    AppDbContext context,
+     UserManager<AppUser> userManager,
+-    ICurrentUserService currentUserService) : IUserService
++    RoleManager<AppRole> roleManager,
++    ICurrentUserService currentUserService,
++    IEmailService emailService,
++    ILogger<UserService> logger,
++    TimeProvider timeProvider) : IUserService
+ {
+     private const string AccountLockedMessage =
+         "Çok fazla hatalı deneme yapıldı, hesabınız geçici olarak kilitlendi. Lütfen daha sonra tekrar deneyin.";
+ 
++    private const string UserNotFoundMessage = "Kullanıcı bulunamadı.";
++
+     public async Task<ServiceResult<UserProfileDto>> GetCurrentUserProfileAsync(CancellationToken cancellationToken = default)
+     {
+         var userResult = await GetAuthenticatedUserAsync();
+@@ -107,6 +117,277 @@ public class UserService(
+         return ServiceResult.Success(HttpStatusCode.NoContent);
+     }
+ 
++    public async Task<ServiceResult> ChangeEmailAsync(ChangeEmailRequest request, CancellationToken cancellationToken = default)
++    {
++        var userResult = await GetAuthenticatedUserAsync();
++        if (userResult.IsFail)
++        {
++            return ServiceResult.Fail(userResult.ErrorMessage!, userResult.Status);
++        }
++
++        var user = userResult.Data!;
++
++        var passwordCheck = await VerifyCurrentPasswordAsync(user, request.CurrentPassword);
++        if (passwordCheck is not null)
++        {
++            return passwordCheck;
++        }
++
++        if (string.Equals(user.Email, request.NewEmail, StringComparison.OrdinalIgnoreCase))
++        {
++            return ServiceResult.Fail("Yeni e-posta adresi mevcut e-posta adresinizle aynı olamaz.", HttpStatusCode.BadRequest);
++        }
++
++        var existingEmailUser = await userManager.FindByEmailAsync(request.NewEmail);
++        if (existingEmailUser is not null && existingEmailUser.Id != user.Id)
++        {
++            return ServiceResult.Fail("Bu e-posta adresi başka bir kullanıcı tarafından kullanılmaktadır.", HttpStatusCode.BadRequest);
++        }
++
++        // E-posta hemen değiştirilmez; yeni adrese doğrulama anahtarı gönderilir (confirm-email-change ile tamamlanır).
++        var changeEmailToken = await userManager.GenerateChangeEmailTokenAsync(user, request.NewEmail);
++        await emailService.SendEmailAsync(
++            request.NewEmail,
++            "E-posta Değişikliği Doğrulaması",
++            $"E-posta adresinizi değiştirmek için aşağıdaki anahtarı (Token) kullanabilirsiniz: {changeEmailToken}",
++            cancellationToken);
++        logger.LogInformation("E-posta değişikliği için doğrulama e-postası oluşturuldu. Kullanıcı: {UserId}", user.Id);
++
++        return ServiceResult.Success(HttpStatusCode.NoContent);
++    }
++
++    public async Task<ServiceResult> ConfirmEmailChangeAsync(ConfirmEmailChangeRequest request, CancellationToken cancellationToken = default)
++    {
++        var userResult = await GetAuthenticatedUserAsync();
++        if (userResult.IsFail)
++        {
++            return ServiceResult.Fail(userResult.ErrorMessage!, userResult.Status);
++        }
++
++        var user = userResult.Data!;
++
++        // Diğer hassas işlemlerle aynı kural: kilitli hesap işlem yapamaz, hatalı token lockout sayacını artırır.
++        if (await userManager.IsLockedOutAsync(user))
++        {
++            return ServiceResult.Fail(AccountLockedMessage, HttpStatusCode.Forbidden);
++        }
++
++        var changeResult = await userManager.ChangeEmailAsync(user, request.NewEmail, request.Token);
++        if (!changeResult.Succeeded)
++        {
++            await userManager.AccessFailedAsync(user);
++            return ServiceResult.Fail("Doğrulama anahtarı geçersiz veya süresi dolmuş.", HttpStatusCode.BadRequest);
++        }
++
++        var sessionUpdate = await userManager.ClearSessionAsync(user, rotateSecurityStamp: true);
++        if (!sessionUpdate.Succeeded)
++        {
++            return UserSessionExtensions.SessionUpdateFailed();
++        }
++
++        return ServiceResult.Success(HttpStatusCode.NoContent);
++    }
++
++    public async Task<ServiceResult> DeleteAccountAsync(DeleteAccountRequest request, CancellationToken cancellationToken = default)
++    {
++        var userResult = await GetAuthenticatedUserAsync();
++        if (userResult.IsFail)
++        {
++            return ServiceResult.Fail(userResult.ErrorMessage!, userResult.Status);
++        }
++
++        var user = userResult.Data!;
++
++        var passwordCheck = await VerifyCurrentPasswordAsync(user, request.CurrentPassword);
++        if (passwordCheck is not null)
++        {
++            return passwordCheck;
++        }
++
++        var isAdmin = await userManager.IsInRoleAsync(user, RoleNames.Admin);
++
++        // Anonimleştirme ve oturum temizleme tek transaction'da: ara adım başarısız olursa hesap yarım silinmiş kalmaz.
++        await using var transaction = await context.Database.BeginTransactionAsync(cancellationToken);
++
++        // Sistemde en az bir aktif Admin kalmalı; son aktif Admin kendi hesabını silemez (Admin olmayan kilit almaz).
++        if (isAdmin && await LockAdminRoleAndCountActiveAdminsAsync(cancellationToken) <= 1)
++        {
++            return ServiceResult.Fail(
++                "Son yöneticinin hesabı silinemez; önce başka bir kullanıcıya Admin rolü verin.",
++                HttpStatusCode.BadRequest);
++        }
++
++        // Kişisel veriler anonimleştirilir (silinen hesabın e-posta/kullanıcı adı yeniden kullanılabilsin)
++        var suffix = user.Id.ToString("N");
++        var anonymizeUserName = await userManager.SetUserNameAsync(user, $"deleted_{suffix}");
++        var anonymizeEmail = await userManager.SetEmailAsync(user, $"deleted_{suffix}@deleted.local");
++        if (!anonymizeUserName.Succeeded || !anonymizeEmail.Succeeded)
++        {
++            var anonymizeErrors = anonymizeUserName.Errors.Concat(anonymizeEmail.Errors).Select(e => e.Description).ToList();
++            return ServiceResult.Fail(anonymizeErrors, HttpStatusCode.BadRequest);
++        }
++
++        user.FullName = null;
++        user.PhoneNumber = null;
++        user.IsDeleted = true;
++        user.DeletedAt = timeProvider.GetUtcNow().UtcDateTime;
++        user.LockoutEnabled = true;
++        user.LockoutEnd = DateTimeOffset.MaxValue;
++
++        // Refresh token silinir, security stamp yenilenir ve tüm alanlar tek yazımda kaydedilir.
++        var updateResult = await userManager.ClearSessionAsync(user, rotateSecurityStamp: true);
++        if (!updateResult.Succeeded)
++        {
++            var errors = updateResult.Errors.Select(e => e.Description).ToList();
++            return ServiceResult.Fail(errors, HttpStatusCode.BadRequest);
++        }
++
++        await transaction.CommitAsync(cancellationToken);
++
++        return ServiceResult.Success(HttpStatusCode.NoContent);
++    }
++
++    public async Task<ServiceResult<UserRolesDto>> GetUserRolesAsync(Guid userId, CancellationToken cancellationToken = default)
++    {
++        var user = await FindActiveUserAsync(userId);
++        if (user is null)
++        {
++            return ServiceResult<UserRolesDto>.Fail(UserNotFoundMessage, HttpStatusCode.NotFound);
++        }
++
++        var roles = await userManager.GetRolesAsync(user);
++        return ServiceResult<UserRolesDto>.Success(new UserRolesDto(user.Id, roles.Order(StringComparer.Ordinal).ToList()));
++    }
++
++    public async Task<ServiceResult> UpdateUserRolesAsync(Guid userId, UpdateUserRolesRequest request, CancellationToken cancellationToken = default)
++    {
++        var user = await FindActiveUserAsync(userId);
++        if (user is null)
++        {
++            return ServiceResult.Fail(UserNotFoundMessage, HttpStatusCode.NotFound);
++        }
++
++        var requestedNames = (request.Roles ?? [])
++            .Where(r => !string.IsNullOrWhiteSpace(r))
++            .Select(r => r.Trim())
++            .Distinct(StringComparer.OrdinalIgnoreCase)
++            .ToList();
++        if (requestedNames.Count == 0)
++        {
++            return ServiceResult.Fail("En az bir rol belirtilmelidir.", HttpStatusCode.BadRequest);
++        }
++
++        // İstenen roller veritabanındaki adlarına çözülür (büyük/küçük harf farkı önemsiz); olmayan rol atanmaz.
++        var requestedRoles = new List<string>();
++        var missingRoles = new List<string>();
++        foreach (var roleName in requestedNames)
++        {
++            var role = await roleManager.FindByNameAsync(roleName);
++            if (role?.Name is null)
++            {
++                missingRoles.Add(roleName);
++            }
++            else
++            {
++                requestedRoles.Add(role.Name);
++            }
++        }
++
++        if (missingRoles.Count > 0)
++        {
++            return ServiceResult.Fail($"Şu roller bulunamadı: {string.Join(", ", missingRoles)}.", HttpStatusCode.BadRequest);
++        }
++
++        var currentRoles = await userManager.GetRolesAsync(user);
++        var rolesToRemove = currentRoles.Except(requestedRoles, StringComparer.OrdinalIgnoreCase).ToList();
++        var rolesToAdd = requestedRoles.Except(currentRoles, StringComparer.OrdinalIgnoreCase).ToList();
++        if (rolesToRemove.Count == 0 && rolesToAdd.Count == 0)
++        {
++            return ServiceResult.Success(HttpStatusCode.NoContent);
++        }
++
++        // Kaldırma, ekleme ve oturum iptali tek transaction'da: biri başarısız olursa kullanıcı yarım rol setiyle kalmaz.
++        await using var transaction = await context.Database.BeginTransactionAsync(cancellationToken);
++
++        // Sistemde Admin kalmazsa yönetim uçlarına kimse erişemez; son aktif Admin'in rolü kaldırılamaz (kendisi dahil).
++        if (rolesToRemove.Contains(RoleNames.Admin, StringComparer.OrdinalIgnoreCase))
++        {
++            var activeAdminCount = await LockAdminRoleAndCountActiveAdminsAsync(cancellationToken);
++            if (activeAdminCount <= 1)
++            {
++                return ServiceResult.Fail(
++                    "Son yöneticinin Admin rolü kaldırılamaz; önce başka bir kullanıcıya Admin rolü verin.",
++                    HttpStatusCode.BadRequest);
++            }
++        }
++
++        if (rolesToRemove.Count > 0)
++        {
++            var removeResult = await userManager.RemoveFromRolesAsync(user, rolesToRemove);
++            if (!removeResult.Succeeded)
++            {
++                return RoleUpdateFailed(removeResult);
++            }
++        }
++
++        if (rolesToAdd.Count > 0)
++        {
++            var addResult = await userManager.AddToRolesAsync(user, rolesToAdd);
++            if (!addResult.Succeeded)
++            {
++                return RoleUpdateFailed(addResult);
++            }
++        }
++
++        // Eski access token'lar eski rolleri taşır: security stamp yenilenir (401) ve refresh token iptal edilir.
++        var sessionUpdate = await userManager.ClearSessionAsync(user, rotateSecurityStamp: true);
++        if (!sessionUpdate.Succeeded)
++        {
++            return UserSessionExtensions.SessionUpdateFailed();
++        }
++
++        await transaction.CommitAsync(cancellationToken);
++
++        logger.LogInformation(
++            "Kullanıcı rolleri güncellendi. Hedef: {TargetUserId}, İşlemi yapan: {AdminUserId}, Eklenen: {AddedRoles}, Kaldırılan: {RemovedRoles}",
++            user.Id, currentUserService.UserId, rolesToAdd, rolesToRemove);
++
++        return ServiceResult.Success(HttpStatusCode.NoContent);
++    }
++
++    /// <summary>
++    /// Açık bir transaction içinde çağrılır. Eşzamanlı son-admin yarışı: iki Admin aynı anda birbirinin rolünü kaldırırsa
++    /// (veya hesabını silerse) ikisi de 2 sayıp 0 Admin bırakır. Admin rol satırına UPDATE (yeni ConcurrencyStamp; SQL Server değişmeyen UPDATE kilidini bırakabilir) satırı
++    /// commit'e kadar kilitler; ikinci istek bekler ve güncel aktif Admin sayısını görür.
++    /// </summary>
++    private async Task<int> LockAdminRoleAndCountActiveAdminsAsync(CancellationToken cancellationToken)
++    {
++        var adminRoleName = roleManager.NormalizeKey(RoleNames.Admin);
++        var newStamp = Guid.NewGuid().ToString();
++        await context.Roles
++            .Where(r => r.NormalizedName == adminRoleName)
++            .ExecuteUpdateAsync(s => s.SetProperty(r => r.ConcurrencyStamp, newStamp), cancellationToken);
++
++        return (await userManager.GetUsersInRoleAsync(RoleNames.Admin)).Count(u => !u.IsDeleted);
++    }
++
++    /// <summary>Silinmiş (soft delete) kullanıcılar yönetim uçlarında da yok sayılır.</summary>
++    private async Task<AppUser?> FindActiveUserAsync(Guid userId)
++    {
++        var user = await userManager.FindByIdAsync(userId.ToString());
++        return user is null || user.IsDeleted ? null : user;
++    }
++
++    /// <summary>Eşzamanlı güncelleme (ConcurrencyStamp) 409, diğer Identity hataları 400 döner.</summary>
++    private static ServiceResult RoleUpdateFailed(IdentityResult result)
++    {
++        var errors = result.Errors.Select(e => e.Description).ToList();
++        var status = result.Errors.Any(e => e.Code == nameof(IdentityErrorDescriber.ConcurrencyFailure))
++            ? HttpStatusCode.Conflict
++            : HttpStatusCode.BadRequest;
++        return ServiceResult.Fail(errors, status);
++    }
++
+     /// <summary>
+     /// Hassas işlemlerde mevcut şifreyi doğrular. Hatalı denemeler giriş ekranındaki gibi
+     /// lockout sayacını artırır; hesap kilitliyse işlem yapılmaz.
+@@ -140,7 +421,7 @@ public class UserService(
+         }
+ 
+         var user = await userManager.FindByIdAsync(currentUserService.UserId.Value.ToString());
+-        if (user is null)
++        if (user is null || user.IsDeleted)
+         {
+             return ServiceResult<AppUser>.Fail("Kullanıcı bulunamadı.", HttpStatusCode.NotFound);
+         }
+diff --git a/README.md b/README.md
+index 358b331..64faf74 100644
+--- a/README.md
++++ b/README.md
+@@ -2,7 +2,7 @@
+ 
+ > [!NOTE]
+ > ### 🏷️ Seviye
+-> Bu proje **S2 (Küçük ekip)** seviyesindedir: kullanıcı oturumları, refresh token rotasyonu, şifre sıfırlama, profil yönetimi ve sıkı kimlik rate limit'i aktiftir. Denetim alanları, soft delete, RowVersion/409 ve rol yönetimi (S3) [`recipes/`](recipes/README.md) klasöründeki reçeteyle eklenir. Kodda olmayan bir özelliği 'en iyi uygulama' diye ekleme; önce seviyeyi ve reçeteyi kontrol et. Ayrıntılar: [`recipes/README.md`](recipes/README.md).
++> Bu proje **S3 (Kurum içi)** seviyesindedir: kullanıcı oturumları, refresh token rotasyonu, şifre sıfırlama, profil yönetimi, self-servis e-posta değiştirme, hesap silme (soft delete + anonimleştirme), `AuditableEntity` (Created/Updated/CreatedBy/UpdatedBy), filtreli unique index'ler (`[IsDeleted] = 0`), `RowVersion` ile iyimser eşzamanlılık (409), rol yönetimi (`ICurrentUserService.IsInRole`, `/api/users/{id}/roles`), `X-Correlation-Id` ve sıkı Production açılış kontrolleri aktiftir. N-Tier mimarisinin tavanı S3'tür; S4+ (domain event, API versiyonlama, önbellek) Onion şablonundadır ve geçiş reçete değil yeni projeye taşımadır.
+ 
+ Bu belge, **ProjectApp** çözümünde çalışan **Kıdemli Yazılımcılar (Senior Developers)** ve **Yapay Zeka Kodlama Ajanları (AI Coding Agents — Antigravity, Claude Code, Cursor, Roo Code, GitHub Copilot, Windsurf vb.)** için hazırlanmış **resmi mimari anayasa ve geliştirme rehberidir**. Projede yapılacak her türlü yeni geliştirme, hata düzeltme ve refactoring işlemi bu belgedeki kurallara **%100 sadık kalmak zorundadır**.
+ 
+@@ -11,9 +11,7 @@ Bu belge, **ProjectApp** çözümünde çalışan **Kıdemli Yazılımcılar (Se
+ > Projede herhangi bir işlem yapmadan önce aşağıdaki ana dokümanları **bu sırayla** okuyun:
+ > 1. **Mimari Anayasa (Şu anki belge):** [`README.md`](./README.md) — Katman kuralları, yasaklı paketler, `Feature-Service` & `ServiceResult<T>` standartları ve yeni özellik ekleme adımları.
+ > 2. **AI Geliştirme İş Akışı:** [`docs/AI_WORKFLOW.md`](./docs/AI_WORKFLOW.md) — Kod inceleme (Code Review), mantık hatası analizi, plan modu, doğrulama ve Türkçe commit disiplini.
+-> 3. **Reçeteler:** [`recipes/README.md`](./recipes/README.md) — Seviye atlama (S2→S3) ve opsiyonel kalıp yönergeleri.
+->
+-> SYSTEM_AUDIT ve wiki (docs/wiki) S3 reçetesiyle gelir.
++> 3. **Sistem Denetimi ve Wiki:** [`docs/SYSTEM_AUDIT.md`](./docs/SYSTEM_AUDIT.md) ve [`docs/wiki/index.md`](./docs/wiki/index.md) — Kapsamlı sistem denetimi ve canlı proje hafızası.
+ 
+ ---
+ 
+@@ -70,45 +68,46 @@ ProjectApp.slnx
+ ├── .editorconfig                            # Kod analizi tercihleri (template 0 uyarıyla derlenir)
+ ├── global.json                              # .NET SDK 10 sürüm sabitlemesi + test runner: Microsoft.Testing.Platform (xunit v4)
+ ├── docs/                                    # [AI İş Akışı Klasörü]
+-│   └── AI_WORKFLOW.md                       # [2. AI Geliştirme İş Akışı, Code Review, Planlama & Commit Kuralları]
++│   ├── AI_WORKFLOW.md                       # [2. AI Geliştirme İş Akışı, Code Review, Planlama & Commit Kuralları]
++│   ├── SYSTEM_AUDIT.md                      # [Kapsamlı Sistem Denetim Metodolojisi]
++│   └── wiki/                                # [Canlı Proje Wiki'si: index.md, log.md]
+ │
+-├── recipes/                                 # [Seviye Atlama ve Opsiyonel Reçeteler]
+-│   ├── README.md                            # [3. Reçete İndeksi ve Seviye Kılavuzu]
++├── recipes/                                 # [Reçete İndeksi ve Seviye Kılavuzu]
++│   ├── README.md                            # Reçete kullanım rehberi (S1-S2, S2-S3)
+ │   ├── S1-S2/                               # S1 → S2: Kullanıcı oturumları, refresh token, logout, şifre sıfırlama
+-│   ├── S2-S3/                               # S2 → S3: Denetim alanları, soft delete, RowVersion/409, wiki + SYSTEM_AUDIT
+-│   └── opsiyonel-generic-repository-dapper/ # Generic repository, UnitOfWork, Dapper referansı
++│   └── S2-S3/                               # S2 → S3: Denetim alanları, soft delete, RowVersion/409, wiki + SYSTEM_AUDIT
+ │
+ ├── ProjectApp.API/                          # [Sunum Katmanı - Startup Project]
+ │   ├── Controllers/
+ │   │   ├── CustomBaseController.cs          # ServiceResult -> IActionResult dönüşüm merkezi
+ │   │   ├── AuthController.cs                # /api/auth/* (Login, Register, RefreshToken, RevokeToken, Logout, Forgot/ResetPassword, Me)
+-│   │   ├── UsersController.cs               # /api/users/* (Me, Profile, ChangePassword)
+-│   │   ├── ProductsController.cs            # /api/products/* (GetAll, GetPaged, GetById, Create, Update, Delete)
++│   │   ├── UsersController.cs               # /api/users/* (Me, Profile, ChangePassword, ChangeEmail, ConfirmEmailChange, DeleteAccount, Roles)
++│   │   ├── ProductsController.cs            # /api/products/* (GetAll, GetPaged, GetById, Create, Update, UpdateStock, Delete)
+ │   │   └── CategoriesController.cs          # /api/categories/* (GetAll, GetById, Products, Create, Update, Delete)
+ │   ├── ExceptionHandlers/
+ │   │   ├── CriticalExceptionHandler.cs      # IExceptionHandler (Öncelik 1): CriticalException'ı Critical seviyesinde loglar
+-│   │   └── GlobalExceptionHandler.cs        # IExceptionHandler (Öncelik 2): 499 (iptal), 409 (unique), güvenli 500
++│   │   └── GlobalExceptionHandler.cs        # IExceptionHandler (Öncelik 2): 499 (iptal), 409 (unique/concurrency), güvenli 500
+ │   ├── Extensions/
+ │   │   ├── AuthenticationExtensions.cs      # IdentityCore, Password/Lockout kuralları, JWT Bearer ve OnTokenValidated (security stamp)
+ │   │   ├── ControllerExtensions.cs          # AddControllers + FluentValidationFilter kaydı
+-│   │   ├── CorsExtensions.cs                # Development & Production CORS politikaları
++│   │   ├── CorsExtensions.cs                # Development & Production CORS politikaları (Production'da boş olamaz)
+ │   │   ├── ExceptionHandlerExtensions.cs    # IExceptionHandler zinciri kaydı
+-│   │   ├── ForwardedHeadersExtensions.cs    # X-Forwarded-* (KnownProxies / KnownNetworks / NoProxy) kontrolü
++│   │   ├── ForwardedHeadersExtensions.cs    # X-Forwarded-* (KnownProxies / KnownNetworks / NoProxy) zorunlu kontrolü
+ │   │   ├── HealthCheckExtensions.cs         # /health (liveness) ve /health/ready (SQL kontrolü)
+ │   │   ├── OpenApiExtensions.cs             # OpenAPI v1 şeması + Scalar UI (/scalar/v1) + JWT Bearer şeması
+ │   │   ├── RateLimiterExtensions.cs         # Global FixedWindow (NameIdentifier/IP) + kimlik uçlarına auth-policy limiter
+ │   │   ├── SecurityHeadersExtensions.cs     # nosniff, X-Frame-Options, Referrer-Policy, Permissions-Policy, CSP
+-│   │   └── SerilogExtensions.cs             # Serilog yapılandırması (Console + günlük dönen dosya)
++│   │   └── SerilogExtensions.cs             # Serilog yapılandırması (Console + günlük dönen dosya, X-Correlation-Id)
+ │   ├── Filters/
+ │   │   └── FluentValidationFilter.cs        # IAsyncActionFilter: doğrulama hatalarını ServiceResult.Fail olarak döner
+ │   ├── Infrastructure/
+ │   │   ├── IdentityDataSeeder.cs            # Development: MigrateAsync + Seed:AdminPassword ile admin (roller migration'dan gelir)
+ │   │   └── OpenApi/BearerSecuritySchemeTransformer.cs # Bearer şeması + yalnız [Authorize] uçlara güvenlik gereksinimi
+ │   ├── Services/
+-│   │   └── CurrentUser.cs                   # ICurrentUserService implementasyonu (HttpContext.User claims okuyucu)
++│   │   └── CurrentUser.cs                   # ICurrentUserService implementasyonu (HttpContext.User claims okuyucu, IsInRole)
+ │   ├── Program.cs                           # DI kayıtları ve HTTP Middleware Pipeline sıralaması
+-│   ├── ProjectApp.API.http                  # Hazır HTTP istekleri (auth, katalog, kullanıcı, health)
+-│   ├── appsettings.json                     # Bağlantı cümlesi (DefaultConnection → ProjectAppDb), JWT, RateLimiting (CORS listesi boş)
++│   ├── ProjectApp.API.http                  # Hazır HTTP istekleri (auth, katalog, kullanıcı, roller, health)
++│   ├── appsettings.json                     # Bağlantı cümlesi (DefaultConnection → ProjectAppDb), JWT, RateLimiting
+ │   ├── appsettings.Development.json         # Geliştirme: localhost CORS kaynakları, proje başına üretilen SigningKey, Seed:AdminPassword
+ │   └── appsettings.Production.json          # Canlı ortam şablonu (ortam değişkenleri ile ezilecek anahtarlar)
+ │
+@@ -123,9 +122,9 @@ ProjectApp.slnx
+ │   │   └── ServiceExtensions.cs             # Mapster, FluentValidation, Options, e-posta ve Feature-Service DI kayıtları
+ │   ├── Features/
+ │   │   ├── Auth/                            # IAuthService, AuthService, Login, Register, RefreshToken, Logout, Forgot/ResetPassword
+-│   │   ├── Users/                           # IUserService, UserService, Me, Profile, ChangePassword
++│   │   ├── Users/                           # IUserService, UserService, Me, Profile, Password, Email, DeleteAccount, Roles
+ │   │   ├── Categories/                      # ICategoryService, CategoryService, Create/Update/Dto/Mapping/Validators
+-│   │   └── Products/                        # IProductService, ProductService, Create/Update/ProductDto/Mapping/Validators
++│   │   └── Products/                        # IProductService, ProductService, Create/Update/UpdateStock/ProductDto/Mapping/Validators
+ │   ├── Identity/
+ │   │   ├── ITokenService.cs & TokenService.cs # AccessToken (JWT + security_stamp) ve RefreshToken rotasyonu
+ │   │   ├── JwtOptions.cs                    # Options pattern (AccessTokenMinutes, RefreshTokenDays DataAnnotations doğrulamalı)
+@@ -134,26 +133,26 @@ ProjectApp.slnx
+ │   └── ServiceResult.cs                     # ServiceResult ve ServiceResult<T> sarmalayıcı sınıfları
+ │
+ ├── ProjectApp.Repositories/                 # [Veri Erişim Katmanı - Data Access Layer]
+-│   ├── Common/                              # BaseEntity, AuditableEntity (Created/Updated), IAuditEntity, ICurrentUserService
++│   ├── Common/                              # BaseEntity, AuditableEntity (Created/Updated/CreatedBy/UpdatedBy, IsDeleted, RowVersion), IAuditEntity, ICurrentUserService
+ │   ├── Context/
+-│   │   └── AppDbContext.cs                  # IdentityDbContext<AppUser, AppRole, Guid>
++│   │   └── AppDbContext.cs                  # IdentityDbContext<AppUser, AppRole, Guid>, global query filter (IsDeleted)
+ │   ├── Extensions/
+ │   │   └── RepositoryExtensions.cs          # DbContext ve AuditDbContextInterceptor DI kayıtları
+-│   ├── Categories/                          # Category, CategoryConfiguration (unique index)
+-│   ├── Products/                            # Product, ProductConfiguration (unique index)
++│   ├── Categories/                          # Category, CategoryConfiguration (filtreli unique index: [IsDeleted] = 0)
++│   ├── Products/                            # Product, ProductConfiguration (filtreli unique index, IsRowVersion)
+ │   ├── Identity/
+-│   │   ├── AppUser.cs                       # IdentityUser<Guid> (RefreshToken, RefreshTokenExpiryTime)
++│   │   ├── AppUser.cs                       # IdentityUser<Guid> (RefreshToken, RefreshTokenExpiryTime, IsDeleted)
+ │   │   ├── AppRole.cs                       # IdentityRole<Guid>
+ │   │   ├── RoleNames.cs                     # Admin / User sabitleri
+ │   │   ├── AppRoleConfiguration.cs          # Admin/User rolleri HasData ile migration'a gömülü
+ │   │   ├── TurkishIdentityErrorDescriber.cs # Identity hata mesajlarının Türkçe karşılıkları
+ │   │   └── AppUserConfiguration.cs          # AppUser EF Core konfigürasyonu
+ │   ├── Interceptors/
+-│   │   └── AuditDbContextInterceptor.cs     # SaveChangesInterceptor: Otomatik Created/Updated zaman damgası ataması
+-│   └── Migrations/                          # InitialCreate (şema + roller) ve model anlık görüntüsü (Snapshot)
++│   │   └── AuditDbContextInterceptor.cs     # SaveChangesInterceptor: Created/Updated/CreatedBy/UpdatedBy ve otomatik soft delete
++│   └── Migrations/                          # Şema + roller + denetim/soft-delete ve model anlık görüntüsü (Snapshot)
+ │
+ └── tests/                                   # [Test Projeleri - xUnit v3]
+-    ├── ProjectApp.UnitTests/                # Validator + servis testleri (SQLite TestDb + NSubstitute)
++    ├── ProjectApp.UnitTests/                # Validator + servis testleri (SQLite in-memory TestDb)
+     └── ProjectApp.IntegrationTests/         # WebApplicationFactory + SQLite in-memory (Auth, Catalog, Security)
+ ```
+ 
+@@ -167,9 +166,9 @@ flowchart TD
+ 
+ | Katman | Referans Verdiği Proje | Sorumluluklar ve Kesin Sınır Kuralları |
+ | :--- | :--- | :--- |
+-| **`ProjectApp.Repositories`** | *Yok (En alt katman)* | `AppDbContext`, Entity'ler (`Product`, `Category`, `AppUser`, `AppRole`), `IEntityTypeConfiguration<T>` ve `AuditDbContextInterceptor` barındırır. **Bu katmana asla DTO, iş kuralı veya Controller referansı eklenmez.** (Generic repository ve UnitOfWork opsiyonel reçeteyle gelir). |
++| **`ProjectApp.Repositories`** | *Yok (En alt katman)* | `AppDbContext`, Entity'ler (`Product`, `Category`, `AppUser`, `AppRole`), `IEntityTypeConfiguration<T>` ve `AuditDbContextInterceptor` barındırır. Repository sınıfı bulunmaz; servisler doğrudan `AppDbContext` kullanır. **Bu katmana asla DTO, iş kuralı veya Controller referansı eklenmez.** |
+ | **`ProjectApp.Services`** | `ProjectApp.Repositories` | İş mantığı (`Feature-Service`), DTO/Request/Response modelleri, `FluentValidation` sınıfları, `Mapster` profilleri ve `ServiceResult<T>` barındırır. Servisler `AppDbContext`'i doğrudan kullanır. Hiçbir ASP.NET Core MVC tipine (filter, exception handler) bağımlı değildir. |
+-| **`ProjectApp.API`** | `ProjectApp.Services` *(ve dolaylı olarak `Repositories`)* | Yalnızca `CustomBaseController` tabanlı Controller'lar, Middleware/Pipeline yapılandırması (`Program.cs`), `CurrentUser` (`HttpContextAccessor`), `FluentValidationFilter`, exception handler'lar, CORS, Rate Limiting, ForwardedHeaders, OpenAPI/Scalar ve `IdentityDataSeeder` içerir. **Controller içinde `AppDbContext` doğrudan enjekte edilmez.** (NotFoundFilter opsiyonel reçeteyle gelir). |
++| **`ProjectApp.API`** | `ProjectApp.Services` *(ve dolaylı olarak `Repositories`)* | Yalnızca `CustomBaseController` tabanlı Controller'lar, Middleware/Pipeline yapılandırması (`Program.cs`), `CurrentUser` (`HttpContextAccessor`), `FluentValidationFilter`, exception handler'lar, CORS, Rate Limiting, ForwardedHeaders, OpenAPI/Scalar ve `IdentityDataSeeder` içerir. **Controller içinde `AppDbContext` doğrudan enjekte edilmez.** |
+ 
+ ---
+ 
+@@ -183,7 +182,7 @@ flowchart TD
+ - **Token Rotasyonu:** `/api/auth/refresh-token` çağrıldığında hem yeni bir Access Token hem de yeni bir Refresh Token üretilir ve eski Refresh Token veritabanında ezilir (`UserSessionExtensions.StoreRefreshTokenAsync`).
+ - **Güvenli İptal (Revoke):** Refresh Token değeri URL/QueryString üzerinde loglara sızmaması için `[HttpPost("revoke-token")]` uç noktasında `[FromBody] RevokeRefreshTokenRequest` ile gövdeden alınır; veritabanında temizlenir (`204 NoContent`).
+ - **Çıkış (Logout):** `[HttpPost("logout")]` ile oturum kapatıldığında refresh token temizlenir ve `UpdateSecurityStampAsync` çağrılarak mevcut access token da anında iptal edilir (`204 NoContent`).
+-- **Access token anında iptal edilir (security stamp):** `TokenService` access token'a `security_stamp` claim'i ekler; `AuthenticationExtensions` içindeki `OnTokenValidated` her kimliği doğrulanmış istekte bu değeri veritabanındaki `SecurityStamp` ile karşılaştırır. Kullanıcı silinmişse veya stamp farklıysa istek **401** alır. Logout, şifre değişikliği ve şifre sıfırlama stamp'i yeniler; eski token'lar süresinin dolmasını beklemeden anında geçersiz olur. (Kullanıcı adı değişikliğinde de Identity stamp'i yeniler: o anki access token 401 alır, istemci `refresh-token` ile yeni token alır; yeniden giriş gerekmez.)
++- **Access token anında iptal edilir (security stamp):** `TokenService` access token'a `security_stamp` claim'i ekler; `AuthenticationExtensions` içindeki `OnTokenValidated` her kimliği doğrulanmış istekte bu değeri veritabanındaki `SecurityStamp` ile karşılaştırır. Kullanıcı silinmişse (soft delete) veya stamp farklıysa istek **401** alır. Logout, şifre değişikliği, rol değişikliği ve şifre sıfırlama stamp'i yeniler; eski token'lar süresinin dolmasını beklemeden anında geçersiz olur. (Kullanıcı adı değişikliğinde de Identity stamp'i yeniler: o anki access token 401 alır, istemci `refresh-token` ile yeni token alır; yeniden giriş gerekmez.)
+   - **Bedel:** Kimliği doğrulanmış her istekte kullanıcı başına bir indeksli okuma (aynı istekte servisler `FindByIdAsync` çağırırsa EF change tracker'dan döner).
+ - **Tek oturum:** Kullanıcı başına tek refresh token saklanır; yeni giriş önceki cihazın refresh token'ını geçersiz kılar (önceki cihaz access token süresi dolunca yeniden giriş yapar). Aynı kullanıcı için eşzamanlı iki login/refresh isteğinden biri `409 Conflict` ("Oturum güncellenemedi") alır; istemci isteği tekrarlar.
+ - **Giriş olayları loglanır:** başarılı giriş (Information), hatalı şifre ve bilinmeyen hesap (Warning). E-posta loga yazılmaz; zamanlama analizi saldırılarına karşı dummy PBKDF2 doğrulaması çalışır.
+@@ -191,7 +190,7 @@ flowchart TD
+ ### 3.2. Kesin IDOR (Insecure Direct Object Reference) Koruması
+ - **`UsersController` (`/api/users/*`)** ve **`AuthController.Logout` (`/api/auth/logout`)** içindeki hiçbir uç nokta dışarıdan **`Guid userId` parametresi ALMAZ**.
+ - İşlem yapılacak kullanıcı her zaman JWT içindeki `ClaimTypes.NameIdentifier` (`sub`) claim'ini okuyan **`ICurrentUserService.UserId`** üzerinden tespit edilir. Böylece bir kullanıcının başka bir kullanıcının profilini güncellemesi, şifresini değiştirmesi veya oturumunu kapatması mimari düzeyde imkansızdır.
+-- **Rol tabanlı yetki:** `Products` ve `Categories` okuma uçları herkese açıktır; ekleme/güncelleme/silme uçları `[Authorize(Roles = RoleNames.Admin)]` ile yalnızca `Admin` rolüne açıktır (kayıt olan kullanıcılar `User` rolü alır ve bu uçlarda 403 döner).
++- **Rol tabanlı yetki ve yönetim:** `Products` ve `Categories` okuma uçları herkese açıktır; ekleme/güncelleme/silme/stok uçları `[Authorize(Roles = RoleNames.Admin)]` ile yalnızca `Admin` rolüne açıktır. Rol yönetimi `ICurrentUserService.IsInRole(role)` ile denetlenir. Admin uçları `GET /api/users/{id}/roles` ve `PUT /api/users/{id}/roles` üzerinden rol ataması yapılır (rol değişince `UpdateSecurityStampAsync` çağrılarak eski token'lar anında 401 alır). Yeni rol eklemek: `RoleNames` + `AppRoleConfiguration.HasData` + migration.
+ 
+ ### 3.3. ASP.NET Core Identity & Brute-Force Koruması
+ - **Parola Politikası:** En az 8 karakter, büyük harf, küçük harf, rakam ve alfanümerik olmayan özel karakter zorunludur (`RequireUniqueEmail = true`).
+@@ -200,13 +199,16 @@ flowchart TD
+ - **Kilit oturumu düşürmez:** Kilit yalnızca girişi ve şifre değiştirmeyi engeller; `refresh-token` kilit durumuna bakmaz, açık oturum sürer. Bilinçli tercihtir: aksi halde saldırgan 5 hatalı şifreyle gerçek kullanıcının oturumunu düşürebilirdi. Oturumu zorla kapatmak için rol değişikliği, şifre sıfırlama veya hesap silme kullanılır (refresh token silinir, security stamp yenilenir).
+ - `AuthService.LoginAsync` içinde önce `userManager.IsLockedOutAsync(user)` kontrol edilir; şifre yanlışsa `userManager.AccessFailedAsync(user)` çağrılarak sayaç artırılır, doğruysa `ResetAccessFailedCountAsync(user)` ile sıfırlanır.
+ - **Şifre değiştirmede de lockout:** `ChangePasswordAsync` içinde mevcut şifre hatalıysa `AccessFailedAsync` sayacı artar; hesap kilitliyse işlem `403` ile reddedilir.
++- **Son yönetici koruması:** Sistemde en az bir aktif Admin kalır. Son aktif Admin kendi hesabını silemez ve Admin rolü kaldırılamaz (`400`); eşzamanlı rol güncellemesinde yarışı kaybeden istek `409` alır. Sayım, Admin rol satırı kilitlenerek yapılır (iki istek aynı anda son iki yöneticiyi düşüremez).
+ - **Kullanıcı Numaralandırma (Enumeration) Koruması:** `ForgotPasswordAsync` metodu e-posta sistemde kayıtlı olmasa bile her zaman aynı `204 NoContent` (`ServiceResult.Success`) yanıtını döner; kullanıcı mevcutsa sıfırlama token'ı hem loglanır hem de `IEmailService.SendEmailAsync` ile gönderilir.
+ - **Kullanıcı Kaydı (`Registration:AllowPublic`):**
+   - `POST /api/auth/register` ucunda `Registration:AllowPublic = false` (varsayılan) ise yalnızca `Admin` kullanıcı ekleyebilir (anonim istek 401, User rolü 403 alır); `Registration:AllowPublic = true` ise herkese açıktır.
+   - Yeni kullanıcı `Guid.CreateVersion7()` ile açılır ve her zaman varsayılan `User` rolü atanır (`201 Created`). İstemci rol seçemez.
+   - **Açık kayıt (true) seçildiğinde:** login `EmailConfirmed` alanına bakmaz; e-posta doğrulamasının ayrıca eklenmesi gerekir.
+   - **Bilinçli istisna (kayıt):** `register` ucu "e-posta zaten kayıtlı" / "kullanıcı adı kullanılıyor" mesajı döner; bu durum kullanıcı deneyimi içindir ve auth rate limit politikasıyla korunur.
+-- Self-servis e-posta değişikliği (change-email) ve hesap silme (DeleteAccount) S3 reçetesiyle gelir ([`recipes/S2-S3/README.md`](recipes/S2-S3/README.md)).
++- **Self-Servis E-Posta Değişikliği ve Hesap Silme:**
++  - `POST /api/users/change-email` ve `POST /api/users/confirm-email-change`: Kullanıcı e-posta adresini değiştirmek istediğinde yeni adrese token gönderilir; token doğrulandığında e-posta güncellenir ve security stamp yenilenir.
++  - `DELETE /api/users/account`: Kullanıcı kendi hesabını silmek istediğinde şifresi doğrulanır; kullanıcının kişisel bilgileri anonimleştirilir (`FullName = "Silinmiş Kullanıcı"`, `Email` ve `UserName` rastgele Guid ile ezilir), `IsDeleted = true` atanır, oturumları sonlandırılır ve security stamp yenilenir. Silinen kullanıcı sisteme bir daha giriş yapamaz. Son aktif Admin hesabını silemez (400).
+ 
+ ### 3.4. Rate Limiting (Hız Sınırlandırma)
+ - **Pipeline sırası:** `UseAuthentication()` → `UseRateLimiter()` → `UseAuthorization()`. Limiter kimlik doğrulamadan sonra çalıştığı için kullanıcı bazlı bölümleme mümkündür.
+@@ -214,9 +216,9 @@ flowchart TD
+ - **Auth Politikası (`auth-policy`):** `AuthController`'ın kimlik bilgisi/token alan uçlarında (`login`, `register`, `refresh-token`, `revoke-token`, `forgot-password`, `reset-password`) `[EnableRateLimiting(RateLimiterExtensions.AuthPolicyName)]` niteliği bulunur (`me` ve `logout` yalnızca global limite tabidir) ve IP başına dakikada varsayılan 15 istekle (`RateLimiting:Auth:PermitLimit`) sınırlandırılır (`429 Too Many Requests`).
+ - **Limit sırası:** Auth-policy taşıyan uçlar global limitten muaf olduğundan `RateLimiting:Auth:PermitLimit` değeri global limitten (`RateLimiting:Fixed`, varsayılan 60) küçük tutulmalıdır; büyük verilirse bu uçlar için auth limitinden başka üst sınır kalmaz.
+ - **Uca özel `fixed` politikası** (`[EnableRateLimiting(RateLimiterExtensions.FixedPolicyName)]`): `RateLimiterExtensions.FixedPolicyName` ile uca özel sabit pencere politikası sunulur; global limiter gibi kullanıcı/IP bazlı bölümlenir (tek ortak kova değildir).
+-- **Reverse proxy:** `ForwardedHeaders` en başta çalışır; gerçek istemci IP'sinin görünmesi için `ForwardedHeaders:KnownProxies` (tek IP) veya `ForwardedHeaders:KnownNetworks` (CIDR) tanımlanabilir. Canlı ortamda ikisi de boşsa uygulama açılır, proxy yok kabul edilir ve açılışta tek bir uyarı loglanır. Proxy'siz dağıtımda `ForwardedHeaders:NoProxy = true` verilerek uyarı kapatılabilir.
++- **Reverse proxy:** `ForwardedHeaders` en başta çalışır; gerçek istemci IP'sinin görünmesi için `ForwardedHeaders:KnownProxies` (tek IP) veya `ForwardedHeaders:KnownNetworks` (CIDR) tanımlanmalıdır.
+ 
+-### 3.5. CORS, HSTS ve HTTP Güvenlik Başlıkları
++### 3.5. CORS, HSTS, Güvenlik Başlıkları ve Sıkı Production Açılış Kontrolleri
+ - `SecurityHeadersExtensions.cs` her yanıta (exception handler'ın ürettiği 500/409 yanıtları dahil; başlıklar `Response.OnStarting` ile eklenir) şu başlıkları ekler:
+   - `X-Content-Type-Options: nosniff`
+   - `X-Frame-Options: DENY`
+@@ -224,15 +226,29 @@ flowchart TD
+   - `Referrer-Policy: strict-origin-when-cross-origin`
+   - `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'` (Scalar/OpenAPI rotaları hariç)
+ - Production ortamında `app.UseHsts()`, `app.UseHttpsRedirection()` ve yalnızca `Cors:AllowedOrigins` dizisindeki adreslere izin veren `ProdCorsPolicy` devreye girer.
+-- **CORS kaynakları:** `Development` ortamında `DevCorsPolicy` tüm kaynaklara izin verir (`AllowAnyOrigin`). Production ortamında `Cors:AllowedOrigins` listesi kullanılır; liste boşsa uygulama açılır, hiçbir kaynağa izin verilmez ve açılışta tek bir uyarı loglanır.
+-- **Host filtreleme:** Production ortamında `AllowedHosts` `*` kabul edilir; host başlığını kısıtlamak için `AllowedHosts=api.alanadiniz.com` verilmesi önerilir.
+-- **Production açılış garantisi:** Production ortamında yalnızca `ConnectionStrings:DefaultConnection` veya `Jwt:SigningKey` (en az 32 karakter) eksikse uygulama açılmaz; `ForwardedHeaders` veya `Cors:AllowedOrigins` boşsa uyarı logu yazılır.
+-
+-### 3.6. Veri Güvenliği: `AuditDbContextInterceptor`
++- **Sıkı Production Açılış Kontrolleri:**
++  - `ConnectionStrings:DefaultConnection` (eksikse uygulama açılmaz)
++  - `Jwt:SigningKey` (en az 32 karakter; eksik veya kısaysa uygulama açılmaz)
++  - `Cors:AllowedOrigins` (boş olamaz; canlı ortamda izin verilen kaynaklar listelenmelidir, aksi takdirde uygulama açılmaz)
++  - `AllowedHosts` (Production ortamında `*` olamaz; API alan adı verilmelidir, aksi takdirde uygulama açılmaz)
++  - `ForwardedHeaders` (`KnownProxies` veya `KnownNetworks` tanımlı olmalıdır; proxy arkasında değilse `ForwardedHeaders:NoProxy = true` zorunludur; aksi takdirde uygulama açılmaz).
++
++### 3.6. Veri Güvenliği: `AuditDbContextInterceptor`, Soft Delete ve İyimser Eşzamanlılık
+ - **`AuditDbContextInterceptor` (`SaveChangesInterceptor`):**
+-  - **`EntityState.Added`:** `Created = timeProvider.GetUtcNow().UtcDateTime` (`TimeProvider`) atanır; `Updated` alanının `IsModified` özelliği `false` yapılarak korunur.
+-  - **`EntityState.Modified`:** `Created` alanı `IsModified = false` ile korumaya alınır; `Updated = timeProvider.GetUtcNow().UtcDateTime` atanır.
+-- Denetim kullanıcı alanları (`CreatedBy`, `UpdatedBy`), soft delete (`IsDeleted`) ve iyimser eşzamanlılık (`RowVersion`) S3 reçetesiyle gelir ([`recipes/S2-S3/README.md`](recipes/S2-S3/README.md)).
++  - **`EntityState.Added`:** `Created = timeProvider.GetUtcNow().UtcDateTime` ve `CreatedBy = currentUserService.UserId?.ToString()` atanır; `Updated` ve `UpdatedBy` korunur.
++  - **`EntityState.Modified`:** `Created` ve `CreatedBy` korunur; `Updated = timeProvider.GetUtcNow().UtcDateTime` ve `UpdatedBy = currentUserService.UserId?.ToString()` atanır.
++  - **`EntityState.Deleted` (Soft Delete):** `AuditableEntity` veya `IAuditEntity` uygulayan entity'ler fiziksel olarak silinmez; durum `Modified` yapılır, `IsDeleted = true` atanır ve `Updated`/`UpdatedBy` güncellenir.
++- **Global Query Filter:** `AppDbContext` içinde `IAuditEntity` uygulayan tüm entity'ler ve `AppUser` için `x => !x.IsDeleted` global query filtresi devrededir. Silinmiş kayıtlar sorgularda otomatik olarak filtrelenir; silinen kullanıcı giriş yapamaz.
++- **Filtreli Unique Index:** Soft delete kullanılan tablolarda benzersiz alanlar (ör. `Name`, `NormalizedEmail`, `NormalizedUserName`) için filtreli unique index (`[IsDeleted] = 0`) tanımlanır; böylece silinen kaydın değeriyle yeni kayıt açılabilir.
++- **`RowVersion` ile İyimser Eşzamanlılık (Optimistic Concurrency):**
++  - Eşzamanlı güncellemelerde son yazanın sessizce kazanmasını önler (409 Conflict).
++  - **KENDİ entity'n için RowVersion kontrol listesi (migration üretmeden ÖNCE):**
++    1. Configuration'da: `builder.Property(x => x.RowVersion).IsRowVersion();` ve filtreli unique index (`builder.HasIndex(x => x.Name).IsUnique().HasFilter("[IsDeleted] = 0");`).
++       > [!CAUTION]
++       > Migration üretmeden ÖNCE configuration'a `Property(x => x.RowVersion).IsRowVersion()` yazılması şarttır! Unutulursa kolon veritabanında `varbinary(max)` olarak açılır ve sonradan `AlterColumn` SQL Server'da 4927 hatası verir (düzeltmek için DropColumn + AddColumn gerekir).
++    2. Update request ve DTO record modellerine `byte[] RowVersion` ekleyin; validator'da `RuleFor(x => x.RowVersion).NotEmpty();` ile zorunlu kılın.
++    3. Servis içinde güncellemeden önce: `context.Entry(entity).Property(x => x.RowVersion).OriginalValue = request.RowVersion;` atayın.
++    4. Eşzamanlı çakışma durumunda EF Core `DbUpdateConcurrencyException` fırlatır; `GlobalExceptionHandler` bunu yakalayarak `409 Conflict` döner.
+ 
+ ---
+ 
+@@ -263,12 +279,12 @@ sequenceDiagram
+     end
+ ```
+ 
+-0. **`UseForwardedHeaders()` -> `UseSerilogRequestLogging()`:** Proxy başlıkları işlenir, Serilog istek özetini loglar (istek logu exception handler'ın dışında olduğundan 409/499 yanıtları 500 diye loglanmaz; CorrelationId S3 reçetesiyle gelir).
+-1. **`UseExceptionHandler()`:** İşlenmeyen bir istisna fırlatılırsa önce `CriticalExceptionHandler`, ardından `GlobalExceptionHandler` devreye girer: istek iptali `499`, unique index ihlali `409`, diğerleri stack-trace sızdırmadan `500` (`ServiceResult.Fail`).
++0. **`UseForwardedHeaders()` -> `UseSerilogRequestLogging()`:** Proxy başlıkları işlenir, Serilog istek özetini loglar (istek logu exception handler'ın dışında olduğundan 409/499 yanıtları 500 diye loglanmaz; `X-Correlation-Id` başlığı tüm loglara zenginleştirme olarak işlenir).
++1. **`UseExceptionHandler()`:** İşlenmeyen bir istisna fırlatılırsa önce `CriticalExceptionHandler`, ardından `GlobalExceptionHandler` devreye girer: istek iptali `499`, unique index ve concurrency çakışmaları `409`, diğerleri stack-trace sızdırmadan `500` (`ServiceResult.Fail`).
+ 2. **`UseSecurityHeaders()` -> `UseOpenApiAndScalar()` -> `UseHsts()` -> `UseHttpsRedirection()` -> `UseCors()`:** Güvenlik başlıkları, OpenAPI/Scalar, HTTPS ve CORS çalışır.
+ 3. **`UseAuthentication()` -> `UseRateLimiter()` -> `UseAuthorization()`:** JWT doğrulanır (`OnTokenValidated` ile security stamp kontrolü dahil), `HttpContext.User` doldurulur, kullanıcı/IP bazlı hız sınırı uygulanır, ardından yetkilendirme yapılır.
+-4. **`FluentValidationFilter`:** İstek DTO'su için ilgili `AbstractValidator<T>` çalışır; kural ihlali varsa Controller'a girmeden `400 BadRequest` (`ServiceResult.Fail`) döner. (NotFoundFilter opsiyonel reçeteyle gelir).
+-5. **`CustomBaseController` -> `Feature-Service` -> `AppDbContext`:** İş mantığı çalışır, `await context.SaveChangesAsync(cancellationToken)` çağrılır (interceptor yalnızca Created/Updated zaman damgası atar) ve `ServiceResult` uygun HTTP durum koduyla istemciye gönderilir. (UnitOfWork ve generic repository opsiyonel reçeteyle gelir).
++4. **`FluentValidationFilter`:** İstek DTO'su için ilgili `AbstractValidator<T>` çalışır; kural ihlali varsa Controller'a girmeden `400 BadRequest` (`ServiceResult.Fail`) döner.
++5. **`CustomBaseController` -> `Feature-Service` -> `AppDbContext`:** İş mantığı çalışır, `await context.SaveChangesAsync(cancellationToken)` çağrılır (interceptor `Created`/`Updated`/`CreatedBy`/`UpdatedBy` ve soft delete işlemlerini otomatik yürütür) ve `ServiceResult` uygun HTTP durum koduyla istemciye gönderilir.
+ 
+ ---
+ 
+@@ -277,7 +293,7 @@ sequenceDiagram
+ Projeye örneğin **`Order` (Sipariş)** adında yeni bir modül eklerken aşağıdaki **4 adımlı kontrol listesini** sırasıyla uygulayın:
+ 
+ ### ☐ Adım 1: Entity ve EF Core Konfigürasyonu (`ProjectApp.Repositories/Orders/`)
+-1. `ProjectApp.Repositories/Orders/Order.cs` dosyasını oluşturun (`AuditableEntity`'den türetin; `Created/Updated` zaman damgalarını hazır getirir; soft delete ve RowVersion S3 reçetesiyle gelir):
++1. `ProjectApp.Repositories/Orders/Order.cs` dosyasını oluşturun (`AuditableEntity`'den türetin; `Created/Updated`, `CreatedBy/UpdatedBy`, `IsDeleted` ve `RowVersion` alanlarını hazır getirir):
+    ```csharp
+    namespace ProjectApp.Repositories.Orders;
+ 
+@@ -287,7 +303,7 @@ Projeye örneğin **`Order` (Sipariş)** adında yeni bir modül eklerken aşağ
+        public decimal TotalAmount { get; set; }
+    }
+    ```
+-2. `ProjectApp.Repositories/Orders/OrderConfiguration.cs` içinde `IEntityTypeConfiguration<Order>` sınıfını yazın (`OnModelCreating` bunu `ApplyConfigurationsFromAssembly` ile otomatik bulur). Düz unique index kullanın:
++2. `ProjectApp.Repositories/Orders/OrderConfiguration.cs` içinde `IEntityTypeConfiguration<Order>` sınıfını yazın (`OnModelCreating` bunu `ApplyConfigurationsFromAssembly` ile otomatik bulur). Soft delete nedeniyle filtreli unique index (`[IsDeleted] = 0`) ve RowVersion için `IsRowVersion()` kullanın:
+    ```csharp
+    using Microsoft.EntityFrameworkCore;
+    using Microsoft.EntityFrameworkCore.Metadata.Builders;
+@@ -300,20 +316,24 @@ Projeye örneğin **`Order` (Sipariş)** adında yeni bir modül eklerken aşağ
+        {
+            builder.HasKey(x => x.Id);
+            builder.Property(x => x.OrderCode).IsRequired().HasMaxLength(50);
+-           builder.HasIndex(x => x.OrderCode).IsUnique();
++           builder.HasIndex(x => x.OrderCode).IsUnique().HasFilter("[IsDeleted] = 0");
+            builder.Property(x => x.TotalAmount).IsRequired().HasColumnType("decimal(18,2)");
++           builder.Property(x => x.RowVersion).IsRowVersion();
+        }
+    }
+    ```
++   > [!CAUTION]
++   > Migration üretmeden ÖNCE configuration'a `Property(x => x.RowVersion).IsRowVersion()` yazılması zorunludur! Unutulursa kolon veritabanında `varbinary(max)` olarak açılır ve sonradan `AlterColumn` SQL Server'da 4927 hatası verir (düzeltmek için DropColumn + AddColumn gerekir).
++
+ 3. `AppDbContext.cs` içine `public DbSet<Order> Orders { get; set; } = default!;` ekleyin.
+ 
+ ### ☐ Adım 2: DTO, Request/Response, Validator ve Mapster (`ProjectApp.Services/Features/Orders/`)
+-1. `OrderDto.cs`, `Create/CreateOrderRequest.cs`, `Create/CreateOrderResponse.cs`, `Update/UpdateOrderRequest.cs` dosyalarını **`record`** olarak tanımlayın.
+-2. `Create/CreateOrderRequestValidator.cs` içinde `AbstractValidator<CreateOrderRequest>` kurallarını yazın (`AddValidatorsFromAssembly` otomatik kaydeder).
++1. `OrderDto.cs`, `Create/CreateOrderRequest.cs`, `Create/CreateOrderResponse.cs`, `Update/UpdateOrderRequest.cs` dosyalarını **`record`** olarak tanımlayın. Güncelleme modellerinde (`UpdateOrderRequest`) `byte[] RowVersion` alanını ekleyin.
++2. `Create/CreateOrderRequestValidator.cs` ve `Update/UpdateOrderRequestValidator.cs` içinde `AbstractValidator<T>` kurallarını yazın (`RowVersion` için `RuleFor(x => x.RowVersion).NotEmpty();` zorunludur; `AddValidatorsFromAssembly` otomatik kaydeder).
+ 3. `OrderMappingConfig.cs` içinde `IRegister` uygulayın (`typeAdapterConfig.Scan` otomatik tarar).
+ 
+ ### ☐ Adım 3: Feature-Service Arayüzü, Uygulaması ve DI Kaydı (`ProjectApp.Services/Features/Orders/`)
+-1. `IOrderService.cs` ve `OrderService.cs` oluşturun (`AppDbContext`'i doğrudan enjekte edin, `Guid.CreateVersion7()` ve `ServiceResult<T>` kullanın; generic repository ve UnitOfWork opsiyonel reçeteyle gelir):
++1. `IOrderService.cs` ve `OrderService.cs` oluşturun (`AppDbContext`'i doğrudan enjekte edin, `Guid.CreateVersion7()` ve `ServiceResult<T>` kullanın; güncelleme işleminde `context.Entry(order).Property(x => x.RowVersion).OriginalValue = request.RowVersion;` atayın):
+    ```csharp
+    using System.Net;
+    using MapsterMapper;
+@@ -321,6 +341,7 @@ Projeye örneğin **`Order` (Sipariş)** adında yeni bir modül eklerken aşağ
+    using ProjectApp.Repositories;
+    using ProjectApp.Repositories.Orders;
+    using ProjectApp.Services.Features.Orders.Create;
++   using ProjectApp.Services.Features.Orders.Update;
+ 
+    namespace ProjectApp.Services.Features.Orders;
+ 
+@@ -343,6 +364,27 @@ Projeye örneğin **`Order` (Sipariş)** adında yeni bir modül eklerken aşağ
+            return ServiceResult<CreateOrderResponse>.SuccessAsCreated(
+                new CreateOrderResponse(order.Id), $"/api/orders/{order.Id}");
+        }
++
++       public async Task<ServiceResult> UpdateAsync(Guid id, UpdateOrderRequest request, CancellationToken cancellationToken = default)
++       {
++           var order = await context.Orders.FindAsync([id], cancellationToken);
++           if (order is null)
++           {
++               return ServiceResult.Fail("Sipariş bulunamadı.", HttpStatusCode.NotFound);
++           }
++
++           var exists = await context.Orders.AnyAsync(x => x.OrderCode == request.OrderCode && x.Id != id, cancellationToken);
++           if (exists)
++           {
++               return ServiceResult.Fail("Sipariş kodu veritabanında bulunmaktadır.", HttpStatusCode.BadRequest);
++           }
++
++           order = mapper.Map(request, order);
++           context.Entry(order).Property(x => x.RowVersion).OriginalValue = request.RowVersion;
++           await context.SaveChangesAsync(cancellationToken);
++
++           return ServiceResult.Success(HttpStatusCode.NoContent);
++       }
+    }
+    ```
+ 2. `ServiceExtensions.cs` içine `services.AddScoped<IOrderService, OrderService>();` ekleyin.
+@@ -394,20 +436,19 @@ public class OrdersController(IOrderService orderService) : CustomBaseController
+ | **`POST`** | `/api/auth/reset-password` | Anonim (`auth-policy`) | `ResetPasswordRequest(Email, Token, NewPassword)` | Token ile şifreyi sıfırlar, mevcut RefreshToken'ı iptal eder ve SecurityStamp yeniler (`204 NoContent`). |
+ | **`GET`** | `/api/auth/me` | `[Authorize]` | *Yok* | Oturum açmış kullanıcının temel kimlik ve rol bilgilerini (`CurrentUserResponse`) döner. |
+ 
+-> [!NOTE]
+-> Rol yönetimi uçları S3 reçetesiyle gelir ([`recipes/S2-S3/README.md`](recipes/S2-S3/README.md)).
+-
+ ### 6.2. Kullanıcı ve Profil Yönetimi Uç Noktaları (`UsersController` — `/api/users`)
+-> **IDOR Güvenlik Garantisi:** Uç noktalar `[Authorize]` korumalıdır ve dışarıdan **asla `Guid userId` parametresi almaz**; yalnızca oturum açmış kullanıcının (`ICurrentUserService.UserId`) kendi hesabı üzerinde işlem yapar.
++> **IDOR Güvenlik Garantisi:** Uç noktalar `[Authorize]` korumalıdır ve self-servis uçları dışarıdan **asla `Guid userId` parametresi almaz**; yalnızca oturum açmış kullanıcının (`ICurrentUserService.UserId`) kendi hesabı üzerinde işlem yapar. Yönetici uçları ise (`/roles`) hedef kullanıcı ID'sini route parametresi olarak alır ve yalnızca `Admin` rolüyle çağrılabilir.
+ 
+ | HTTP Metodu | Uç Nokta (Route) | Yetki | İstek Gövdesi (Request Body) | Açıklama ve Davranış |
+ | :---: | :--- | :---: | :--- | :--- |
+ | **`GET`** | `/api/users/me` | `[Authorize]` | *Yok* | Oturum açmış kullanıcının `Id`, `FullName`, `UserName`, `Email`, `PhoneNumber` ve `Roles` bilgilerini içeren `UserProfileDto` döner. |
+ | **`PUT`** | `/api/users/profile` | `[Authorize]` | `UpdateProfileRequest(FullName, UserName, PhoneNumber)` | Ad soyad, kullanıcı adı (benzersizlik kontrolüyle) ve telefon numarasını günceller (`204 NoContent`). Kullanıcı adı değişirse Identity security stamp'i yeniler. |
+ | **`POST`** | `/api/users/change-password` | `[Authorize]` | `ChangePasswordRequest(CurrentPassword, NewPassword)` | Mevcut şifreyi doğrulayarak şifreyi değiştirir, `RefreshToken` sıfırlar ve `UpdateSecurityStampAsync` çağırarak eski oturumları geçersiz kılar (`204 NoContent`). |
+-
+-> [!NOTE]
+-> Self-servis e-posta değişikliği (change-email, confirm-email-change) ve hesap silme (DeleteAccount) uçları S3 reçetesiyle gelir ([`recipes/S2-S3/README.md`](recipes/S2-S3/README.md)).
++| **`POST`** | `/api/users/change-email` | `[Authorize]` | `ChangeEmailRequest(NewEmail)` | Yeni e-postaya doğrulama token'ı üretir ve `IEmailService` ile gönderir (`204 NoContent`). |
++| **`POST`** | `/api/users/confirm-email-change` | `[Authorize]` | `ConfirmEmailChangeRequest(NewEmail, Token)` | Doğrulama token'ı ile kullanıcının e-postasını günceller, security stamp'i yeniler (`204 NoContent`). |
++| **`DELETE`** | `/api/users/account` | `[Authorize]` | `DeleteAccountRequest(CurrentPassword)` | Mevcut şifreyi doğrular; kullanıcının kişisel bilgilerini anonimleştirir (`FullName = "Silinmiş Kullanıcı"`, `Email` ve `UserName` rastgele Guid ile ezilir), `IsDeleted = true` yapar, oturumunu kapatır ve security stamp'i yeniler (`204 NoContent`). Silinen kullanıcı giriş yapamaz. Son aktif Admin hesabını silemez (400). |
++| **`GET`** | `/api/users/{id:guid}/roles` | `[Authorize(Roles = RoleNames.Admin)]` | *Yok* | Belirtilen kullanıcının rollerini (`UserRolesResponse`) döner. Yalnızca Admin erişebilir. |
++| **`PUT`** | `/api/users/{id:guid}/roles` | `[Authorize(Roles = RoleNames.Admin)]` | `UpdateUserRolesRequest(List<string> Roles)` | Belirtilen kullanıcının rollerini günceller; `UpdateSecurityStampAsync` çağırarak kullanıcının eski token'larını anında geçersiz kılar (`204 NoContent`). |
+ 
+ ### 6.3. Varsayılan Geliştirici Admin Hesabı (`IdentityDataSeeder`)
+ Uygulama **`Development`** ortamında çalıştırıldığında `IdentityDataSeeder.SeedIdentityDataAsync` otomatik olarak migration'ları uygular (`MigrateAsync`), yönetici hesabını açar (`Admin` ve `User` rolleri `AppRoleConfiguration.HasData` ile migration üzerinden her ortama gelir; seeder yalnızca eksikse ekler):
+@@ -431,7 +472,7 @@ Uygulama **`Development`** ortamında çalıştırıldığında `IdentityDataSee
+ 3. **Asenkron Akışta `CancellationToken` Standartı:**
+    - Controller eylemlerinden servis ve DbContext çağrılarına kadar tüm asenkron metotlar `CancellationToken cancellationToken = default` parametresi taşır. İstemci bağlantıyı kestiğinde uzun süren SQL sorguları anında iptal edilir.
+ 4. **Yapısal Loglama (`Serilog`):**
+-   - `SerilogExtensions.cs` Serilog'u yapılandırır; `UseSerilogRequestLogging()` istek özetlerini loglar. Konsol ve günlük dönen dosya (`logs/log-.txt`) hedefleri aktiftir. (Korelasyon kimliği S3 reçetesiyle gelir; Dapper opsiyonel reçeteyle gelir).
++   - `SerilogExtensions.cs` Serilog'u yapılandırır; `UseSerilogRequestLogging()` istek özetlerini loglar. Konsol ve günlük dönen dosya (`logs/log-.txt`) hedefleri aktiftir. `X-Correlation-Id` başlığı tüm log satırlarına zenginleştirme (enrichment) olarak işlenir.
+ 5. **Sağlık Kontrolleri:**
+    - `GET /health` → liveness (uygulama ayakta, bağımlılık kontrol etmez).
+    - `GET /health/ready` → readiness (`AddSqlServer` ile SQL Server bağlantısını denetler).
+@@ -439,7 +480,7 @@ Uygulama **`Development`** ortamında çalıştırıldığında `IdentityDataSee
+ ### 7.1. API Yanıt Sözleşmesi
+ - Tüm yanıtlar `ServiceResult` formatındadır: başarıda `{"data": ...}`, hatada `{"errorMessage": ["..."]}`. Hata yanıtında `data`, başarı yanıtında `errorMessage` alanı yazılmaz.
+ - **Oluşturma (201):** Gövde `{"data": {"id": "..."}}`, `Location` başlığı kök göreli yoldur (ör. `/api/products/{id}`).
+-- **Benzersizlik ihlali (409 Conflict):** Benzersizlik kısıtı ihlal edildiğinde `GlobalExceptionHandler` tarafından yakalanır ve `409 Conflict` döner. (İyimser eşzamanlılık ve RowVersion S3 reçetesiyle gelir).
++- **Benzersizlik ihlali ve Eşzamanlılık çakışması (409 Conflict):** Benzersizlik kısıtı ihlal edildiğinde veya `RowVersion` çakışmasında (`DbUpdateConcurrencyException`) `GlobalExceptionHandler` tarafından yakalanır ve `409 Conflict` döner.
+ - **Fiyat doğrulaması:** `price` en fazla 16 tam ve 2 ondalık basamak içerebilir (`decimal(18,2)`); taşan veya fazla ondalıklı değerler **400** döner (sessiz yuvarlama veya 500 olmaz).
+ - **429 Too Many Requests:** `ServiceResult` gövdesiyle ve `Retry-After` (saniye) başlığıyla döner.
+ - **Geçersiz istek gövdesi** (bozuk JSON, yanlış tip): iç tip adları sızmaması için genel bir 400 mesajı döner; Identity hata mesajları `TurkishIdentityErrorDescriber` ile Türkçedir.
+@@ -485,11 +526,11 @@ dotnet ef migrations add YeniMigrationAdi --project .\ProjectApp.Repositories --
+ 
+ ### 8.3. Canlıya Geçiş (Production) Kontrol Listesi
+ Uygulamayı Production ortamına taşırken `appsettings.Production.json` veya Ortam Değişkenleri (Environment Variables) üzerinde şu ayarları mutlaka güncelleyin:
+-- [ ] **`ConnectionStrings:DefaultConnection` (Zorunlu):** Uygulamanın tek bağlantı dizesidir (EF Core ve `/health/ready` aynı değeri kullanır; Dapper opsiyonel reçeteyle gelir). Ortam değişkeni `ConnectionStrings__DefaultConnection` ile verin; boş veya eksikse uygulama açılmaz.
++- [ ] **`ConnectionStrings:DefaultConnection` (Zorunlu):** Uygulamanın tek bağlantı dizesidir (EF Core ve `/health/ready` aynı değeri kullanır). Ortam değişkeni `ConnectionStrings__DefaultConnection` ile verin; boş veya eksikse uygulama açılmaz.
+ - [ ] **`Jwt:SigningKey` (Zorunlu):** En az 32 karakterli (256-bit+), yüksek entropili gizli bir anahtar belirleyin (kaynak kodda tutmayın, Secret Manager / Key Vault / Env Var kullanın; boş veya 32 karakterden kısaysa uygulama açılmaz).
+-- [ ] **`ForwardedHeaders:KnownProxies` / `KnownNetworks` (Önerilir):** Reverse proxy / load balancer IP adreslerini veya CIDR ağlarını ekleyin. Boş bırakılırsa uygulama açılır, proxy yok varsayılır ve açılışta tek bir uyarı loglanır; doğrudan internete açıksa `ForwardedHeaders__NoProxy=true` ile uyarı kapatılabilir.
+-- [ ] **`AllowedHosts` (Önerilir):** API alan adını verin (`AllowedHosts=api.alanadiniz.com`); Production'da varsayılan `*` kabul edilir ancak host başlığını kısıtlamak için alan adının verilmesi önerilir.
+-- [ ] **`Cors:AllowedOrigins` (Önerilir):** Canlı Frontend alan adlarınızı (`Cors__AllowedOrigins__0=https://app.alanadiniz.com`) ekleyin; liste boş bırakılırsa uygulama açılır ancak hiçbir kaynağa izin verilmez ve açılışta tek bir uyarı loglanır.
++- [ ] **`Cors:AllowedOrigins` (Zorunlu):** Canlı Frontend alan adlarınızı (`Cors__AllowedOrigins__0=https://app.alanadiniz.com`) ekleyin; liste boş bırakılırsa uygulama AÇILMAZ.
++- [ ] **`AllowedHosts` (Zorunlu):** Production ortamında `*` kabul edilmez; API alan adı verilmelidir (`AllowedHosts=api.alanadiniz.com`), aksi takdirde uygulama AÇILMAZ.
++- [ ] **`ForwardedHeaders:KnownProxies` / `KnownNetworks` (Zorunlu veya NoProxy):** Reverse proxy arkasındaysa IP/CIDR tanımlanmalıdır; proxy yoksa `ForwardedHeaders__NoProxy=true` açıkça belirtilmelidir, aksi takdirde uygulama AÇILMAZ.
+ - [ ] **Veritabanı:** `dotnet ef database update` ile şemayı kurun; `Admin`/`User` rolleri migration ile gelir. İlk Admin kullanıcıyı Production'da oluşturun.
+ - [ ] **`Seed:AdminPassword`:** Production'da **boş** bırakın (tohumlama yalnızca Development'tadır).
+ - [ ] **`RateLimiting`:** Trafik beklentinize göre `RateLimiting:Fixed:PermitLimit` ve `RateLimiting:Auth:PermitLimit` değerlerini optimize edin.
+diff --git a/docs/AI_WORKFLOW.md b/docs/AI_WORKFLOW.md
+index e6db3cc..285599b 100644
+--- a/docs/AI_WORKFLOW.md
++++ b/docs/AI_WORKFLOW.md
+@@ -1,17 +1,45 @@
+ # 🤖 AI Destekli Geliştirme İş Akışı — .NET 10 N-Tier Metodolojisi
+ 
+ > [!IMPORTANT]
+-> **Ön Koşul ve Temel Referans:** Bu doküman, proje kök dizinindeki **[`README.md`](../README.md)** (Mimari Rehber ve AI Kurallar Anayasası) belgesinin ayrılmaz bir parçasıdır. Herhangi bir kod incelemesi, planlama veya geliştirme yapmadan önce **`README.md`**, ardından bu belge (**`docs/AI_WORKFLOW.md`**) ve reçeteler için **[`recipes/README.md`](../recipes/README.md)** sırasıyla okunmalıdır. (SYSTEM_AUDIT ve wiki S2→S3 reçetesiyle gelir).
++> **Ön Koşul ve Temel Referans:** Bu doküman, proje kök dizinindeki **[`README.md`](../README.md)** (Mimari Rehber ve AI Kurallar Anayasası) belgesinin ayrılmaz bir parçasıdır. Herhangi bir kod incelemesi, planlama veya geliştirme yapmadan önce **`README.md`**, ardından bu belge (**`docs/AI_WORKFLOW.md`**) ve denetim süreçleri için **[`docs/SYSTEM_AUDIT.md`](./SYSTEM_AUDIT.md)** sırasıyla okunmalıdır.
+ 
+-Bu doküman, **ProjectApp (.NET 10 N-Tier)** projesinde yapay zeka kodlama ajanları (Antigravity, Claude Code, Cursor, Windsurf, GitHub Copilot vb.) ile çalışırken kullanılan; **kod inceleme, mantık hatası analizi, büyük özellik planlama, doğrulama ve commit disiplinini** tanımlar.
++Bu doküman, **ProjectApp (.NET 10 N-Tier)** projesinde yapay zeka kodlama ajanları (Antigravity, Claude Code, Cursor, Windsurf, GitHub Copilot vb.) ile çalışırken kullanılan; **wiki kurulumu, kod inceleme, mantık hatası analizi, büyük özellik planlama, doğrulama ve commit disiplinini** tanımlar.
+ 
+ ---
+ 
+-## 1. 📚 Proje Dokümantasyonu ve Wiki Durumu
++## 1. 📚 Proje Wiki Mekanizması (`docs/wiki/`)
+ 
+-S1-S2 seviyelerinde canlı wiki (`docs/wiki/`) bulunmaz; mimari rehber ve geliştirme kuralları doğrudan [`README.md`](../README.md) belgesinde kodla birlikte güncel tutulur.
++**Amaç:** AI ajanlarının her oturumda projeyi sıfırdan keşfetmesini önlemek; mimari kararları, eklenen modülleri (`Feature-Service`), veritabanı şema değişikliklerini ve iş kurallarını kalıcı ve birbirine bağlı (*cross-referenced*) tutmak.
+ 
+-Canlı Proje Wiki'si (`docs/wiki/index.md`, `log.md`), çapraz bağlantılı modül sayfaları ve çoklu persona denetim rehberi (`SYSTEM_AUDIT.md`) S2→S3 reçetesiyle (`recipes/S2-S3/README.md`) sisteme dahil edilir.
++### 1.1. Dokümantasyon Katmanları
++1. **Mimari Anayasa ([`README.md`](../README.md)):** N-Tier katman kurallarını (`ProjectApp.API`, `ProjectApp.Services`, `ProjectApp.Repositories`), yasaklı paketleri ve zorunlu tasarım desenlerini (`ServiceResult<T>`, `CustomBaseController`, `Mapster`, `Guid.CreateVersion7()`) belirleyen temel referans.
++2. **Metodoloji ve Denetim Rehberleri (`docs/AI_WORKFLOW.md` & `docs/SYSTEM_AUDIT.md`):** Çalışma disiplinini ve kalite/denetim standartlarını belirleyen kurallar bütünü.
++3. **Canlı Proje Wiki'si (`docs/wiki/`):** AI'ın tam kontrole sahip olduğu, Obsidian stili `` `[[sayfa_adi]]` `` bağlantılarıyla birbirine bağlı, projenin yaşayan hafızasını tutan Markdown dosyaları.
++
++### 1.2. Kritik Wiki Dosyaları
++- **[`docs/wiki/index.md`](./wiki/index.md)** — Tüm wiki'nin içerik haritası. Kategorilere ayrılmış sayfa listesi + tek cümlelik özet. Yeni bir modül (ör. `Order`, `Payment`) veya mimari karar eklendiğinde buraya işlenir.
++- **[`docs/wiki/log.md`](./wiki/log.md)** — Kronolojik kayıt defteri. Her önemli değişiklik dosyanın **en üstüne** şu formatta eklenir:
++  ```markdown
++  ## [YYYY-AA-GG] [İŞLEM_TİPİ] | Kısa Açıklama
++  ```
++  İşlem tipleri:
++  - `INGEST` (Yeni `Feature-Service`, Entity, kütüphane veya iş kuralı eklendiğinde)
++  - `REVIEW` (Kod inceleme, refactoring veya mantık hatası düzeltmesi yapıldığında)
++  - `LINT` (Wiki ve dokümantasyon bakım/tutarlılık kontrolü yapıldığında)
++
++### 1.3. Zorunlu Çalışma Akışı
++- **Önce Oku:** Kod yazmadan veya mimari karar vermeden önce [`README.md`](../README.md) ve [`docs/wiki/index.md`](./wiki/index.md) okunur, gerektiğinde `` `[[link]]` `` bağlantıları takip edilir. Proje sıfırdan rastgele taranmaz.
++- **Proaktif Güncelleme:** Yeni bir Entity, Feature-Service, NuGet paketi, `appsettings.json` yapılandırması veya karmaşık iş kuralı eklendiğinde sadece sohbette bırakılmaz — ilgili wiki sayfası hemen güncellenir/oluşturulur, `index.md` + `log.md` dosyalarına işlenir. Kod değişikliği ile wiki güncellemesi **aynı turda** tamamlanır.
++- **Bağlantısallık:** Her wiki sayfasında ilgili diğer sayfalara `` `[[link]]` `` verilir. Öksüz (hiçbir yere bağlanmayan) sayfa bırakılmaz. Bir modül veya dosya silinirse, ona işaret eden tüm linkler de temizlenir (*broken link* bırakılmaz).
++- **Syntax Örnekleri:** Dokümantasyon içinde `[[...]]` sözdizimini *örnek olarak* göstermek gerekirse inline code (`` `[[sayfa_adi]]` ``) kullanılır; çift köşeli parantez çıplak bırakılmaz.
++
++### 1.4. Operasyon Komutları
++
++| Komut (Kullanıcı Söyler) | AI Ne Yapar |
++|---|---|
++| **"Bunu ingest et"** | Kaynağı/kodu analiz et → `docs/wiki/` altında yeni sayfa aç → çelişen/genişleyen mevcut sayfaları güncelle → `index.md`'ye link ekle → `log.md`'ye `INGEST` kaydı düş |
++| **Detaylı proje sorusu** | Genel varsayım kullanma; önce `README.md` ve `docs/wiki/index.md` üzerinden ilgili sayfaları oku → proje mimarisiyle sentezlenmiş yanıt ver → kalıcı değerliyse wiki'ye ekle |
++| **"Wiki'yi lint et"** | Tüm `docs/wiki/` ve `README.md` referanslarını tara → gerçek C# koduyla çelişen bilgi, güncelliğini yitirmiş karar, öksüz sayfa veya kırık link tespit et → rapor sun → onay sonrası düzelt |
+ 
+ ---
+ 
+@@ -24,25 +52,25 @@ Canlı Proje Wiki'si (`docs/wiki/index.md`, `log.md`), çapraz bağlantılı mod
+   - `.csproj` dosyalarında yasaklı paketler (`AutoMapper`, `MediatR`, `Swashbuckle.AspNetCore`, `MassTransit`, `Finbuckle.MultiTenant`, `Ardalis.Specification`) var mı?
+   - Tüm Entity, DTO ve Route parametrelerinde `Guid` ve yeni kayıtlarda `Guid.CreateVersion7()` standardına uyulmuş mu?
+ - **Ölü Kod (Dead Code):**
+-  - Hiçbir yerde DI ile enjekte edilmeyen veya çağrılmayan servis metotları, DTO/Request/Validator sınıfları.
++  - Hiçbir yerde DI ile enjekte edilmeyen veya çağrılmayan servis metotları, DTO/Request/Validator sınıfları veya konfigürasyonlar.
+   - `.csproj` dosyalarında kodda hiç kullanılmayan `<PackageReference>` paketleri veya gereksiz `using` ifadeleri.
+ - **God Object / Şişkin Dosya ve Katman Sınır İhlalleri:**
+-  - **Controller İhlalleri (`ProjectApp.API`):** Controller içinde iş mantığı, validasyon veya doğrudan `AppDbContext` kullanımı var mı? Tüm Controller'lar `CustomBaseController`'dan miras alıp tek satırda `CreateActionResult(...)` dönüyor mu? Dışarıya doğrudan `Entity` açılmış mı? (Generic repository opsiyonel reçeteyle gelir).
++  - **Controller İhlalleri (`ProjectApp.API`):** Controller içinde iş mantığı, validasyon veya doğrudan `AppDbContext` kullanımı var mı? Tüm Controller'lar `CustomBaseController`'dan miras alıp tek satırda `CreateActionResult(...)` dönüyor mu? Dışarıya doğrudan `Entity` açılmış mı?
+   - **Service İhlalleri (`ProjectApp.Services`):** Tek bir servis sınıfı (`ProductService` vb.) kendi sınırları dışındaki birçok farklı modülün sorumluluğunu üstlenmiş mi? İş kuralı hatalarında `throw new Exception(...)` yerine `ServiceResult.Fail(...)` kullanılmış mı?
+ - **SOLID İhlalleri:**
+   - **Single Responsibility (SRP):** Servis ve Konfigürasyon sınıflarının tek bir sorumluluğu olmalı.
+   - **Open/Closed (OCP):** Yeni bir iş kuralı veya filtre eklemek için mevcut sınıflarda devasa `if/else` veya `switch` blokları mı değiştiriliyor?
+-  - **Dependency Inversion (DIP):** `ProjectApp.API` somut sınıflar yerine arayüzlere (`IProductService`, `ICurrentUserService`) mi bağımlı? (IUnitOfWork ve IGenericRepository opsiyonel reçeteyle gelir).
++  - **Dependency Inversion (DIP):** `ProjectApp.API` katmanı servis arayüzlerine (`IProductService`, `ICurrentUserService`) mi bağımlı?
+ - **DRY (Don't Repeat Yourself) İhlalleri:**
+-  - `AuditDbContextInterceptor` zaten `Created` ve `Updated` zaman damgalarını otomatik yönetirken, servis içinde bu alanların elle tekrar atanması. (Denetim kullanıcı alanları ve soft delete S2/S3 reçetesiyle gelir).
+-  - `FluentValidationFilter` varken Controller veya Service içinde mükerrer `ModelState` kontrolü yazılması. (NotFoundFilter opsiyonel reçeteyle gelir).
++  - `AuditDbContextInterceptor` zaten `Created`, `CreatedBy`, `Updated`, `UpdatedBy` ve Soft-Delete (`IsDeleted`) alanlarını otomatik yönetirken, servis içinde bu alanların elle tekrar atanması.
++  - `FluentValidationFilter` varken Controller veya Service içinde mükerrer `ModelState` kontrolü yazılması.
+   - `Mapster` (`IRegister`) profilleri yerine servis metotları içinde tekrarlayan manuel nesne eşlemeleri.
+ - **KISS & Magic Values:**
+   - Sabit string, rol adı (`RoleNames.Admin` yerine `"Admin"`), bağlantı dizesi veya JWT ayarlarının `IOptions<T>` (`JwtOptions`) yerine kod içine gömülmesi.
+ - **EF Core Optimizasyon ve Performans:**
+   - Salt okunur (Read-Only) sorgularda `AsNoTracking()` kullanılıyor mu?
+   - Veritabanından tüm tabloyu belleğe çekip (`ToListAsync()`) ardından C# tarafında filtreleme/sayfalama yapılması yerine `IQueryable` üzerinde Mapster `.ProjectToType<TDto>().ToPagedResultAsync(request)` kullanılıyor mu?
+-  - Döngü (`foreach`) içinde veritabanı sorgusu (N+1 problemi) veya döngü içinde `context.SaveChangesAsync()` çağrısı var mı? (IUnitOfWork opsiyonel reçeteyle gelir).
++  - Döngü (`foreach`) içinde veritabanı sorgusu (N+1 problemi) veya döngü içinde `context.SaveChangesAsync()` çağrısı var mı?
+ 
+ ### 2.2. Rapor Formatı
+ Her bulgu için:
+@@ -56,8 +84,8 @@ Bulgular önem sırasına göre (**Kritik → Yüksek → Orta → Kozmetik**) l
+ AI bulguları **uygulamadan önce raporlar** ve kullanıcı onayı bekler (*"onayladım, uygula"* / *"sırayla adım adım yap"*). Onay sonrası:
+ 1. Bulgular sırayla, **her biri ayrı ve izole bir adım** olarak düzeltilir.
+ 2. Her düzeltmeden sonra `dotnet build` ile derleme ve tip güvenliği doğrulanır.
+-3. Silinen veya yeniden adlandırılan sınıf/metotların `ServiceExtensions.cs`, `RepositoryExtensions.cs` ve `README.md` içindeki **kalıntı referansları** taranır ve temizlenir. (docs/wiki/ S2→S3 reçetesiyle gelir).
+-4. İşlem tamamlandığında commit kurallarına uygun kayıt açılır (docs/wiki/log.md kaydı S2→S3 reçetesiyle gelir).
++3. Silinen veya yeniden adlandırılan sınıf/metotların `ServiceExtensions.cs`, `RepositoryExtensions.cs`, `README.md` ve `docs/wiki/` içindeki **kalıntı referansları** taranır ve temizlenir.
++4. İşlem tamamlandığında [`docs/wiki/log.md`](./wiki/log.md) dosyasına `REVIEW` kaydı düşülür.
+ 
+ ---
+ 
+@@ -69,45 +97,44 @@ Bu aşama, stil ve mimari incelemeden **ayrı bir derinlemesine geçiş** olarak
+ ### 3.1. Nelere Bakılır?
+ - **Asenkron & Concurrency / DbContext Çakışmaları:**
+   - Aynı `AppDbContext` (Scoped) örneği üzerinde paralel `Task.WhenAll(...)` çalıştırılması (EF Core `DbContext` thread-safe değildir!).
+-  - Yazma (`Create`, `Update`, `Delete`) işlemlerinden sonra `await context.SaveChangesAsync()` çağrısının unutulması veya tek bir işlemde gereksiz yere birden fazla kez çağrılması. (IUnitOfWork opsiyonel reçeteyle gelir).
+-  - Eşzamanlılık ve yarış durumu (race condition) riskleri (Refresh Token veya UpdateStock gibi işlemler S2/S3 reçetesiyle gelir).
++  - Yazma (`Create`, `Update`, `Delete`) işlemlerinden sonra `await context.SaveChangesAsync(cancellationToken)` çağrısının unutulması veya tek bir iş biriminde gereksiz yere birden fazla kez çağrılması.
++  - Refresh Token yenileme (`RefreshTokenAsync`) veya stok güncelleme (`UpdateStockAsync`) gibi işlemlerde yarış durumu (*race condition*) riski.
+ - **Algoritma, Hesaplama ve Sayfalama Hataları:**
+   - `PagedRequest` ve `PagedResult<T>` hesaplamalarında `PageNumber` / `PageSize` sınır değerleri (0 veya negatif değerler, `Skip((page - 1) * size)` taşmaları).
+-  - Fiyat (`decimal`) hesaplamalarında yuvarlama/işaret hataları.
+-  - JWT `AccessTokenMinutes` süre hesaplamalarında `TimeProvider` yerine yerel saat (`DateTime.Now`) kullanılması nedeniyle oluşan saat dilimi kaymaları. (RefreshToken S2 reçetesiyle gelir).
+-- **Soft-Delete ve Global Query Filter (S3+):**
+-  - Soft delete ve `IsDeleted` query filter S2→S3 reçetesiyle gelir (`recipes/S2-S3/README.md`); S1 şablonunda yer almaz.
++  - Fiyat (`decimal`), indirim veya stok hesaplamalarında yuvarlama/işaret hataları.
++  - JWT `AccessTokenExpiration` ve `RefreshTokenExpiration` süre hesaplamalarında `DateTime.UtcNow` yerine yerel saat (`DateTime.Now`) kullanılması nedeniyle oluşan saat dilimi kaymaları.
++- **Soft-Delete ve Global Query Filter Tutarlılığı:**
++  - `AppDbContext` içinde tanımlı `HasQueryFilter(e => !e.IsDeleted)` filtresinin ilişkili tablolarda (ör. silinmiş bir kategorinin ürünlerinin listelenmesi veya aynı isimde silinmiş bir kaydın Unique Index / `AnyAsync` kontrolüne takılması) yarattığı mantıksal çelişkiler.
+ - **Eksik Girdi Doğrulaması (FluentValidation):**
+-  - Yeni eklenen `Create*Request` veya `Update*Request` record'ları için `AbstractValidator<T>` sınıfının yazılmamış olması veya sınır kurallarının (boş string, negatif fiyat, geçersiz `Guid.Empty`) eksik bırakılması.
++  - Yeni eklenen `Create*Request` veya `Update*Request` record'ları için `AbstractValidator<T>` sınıfının yazılmamış olması veya sınır kurallarının (boş string, negatif fiyat, geçersiz `Guid.Empty`, eksik `RowVersion`) eksik bırakılması.
+ - **Gereksiz Sık İşlem:**
+-  - Aynı metot içinde aynı kaydın hem servis içinde hem doğrulamada gereksiz yere mükerrer veritabanından sorgulanması (`AnyAsync` + `GetByIdAsync` optimizasyonu; NotFoundFilter opsiyonel reçeteyle gelir).
++  - Aynı metot içinde aynı kaydın hem varlık kontrolü hem de servis içinde tekrar tekrar veritabanından sorgulanması (`AnyAsync` + `FindAsync`/`FirstOrDefaultAsync` optimizasyonu).
+ 
+ ### 3.2. Rapor + Onay
+-Bölüm 2.2 ve 2.3'teki akış izlenir: **Rapor → Kullanıcı Onayı → Sıralı Düzeltme → `dotnet build` Doğrulaması.** Yapılan bir düzeltmenin yan etkisi olarak yeni bir uç durum (*edge case*) ortaya çıkarsa gizlenmez, ayrı bir bulgu olarak raporlanır. (Wiki REVIEW kaydı S2→S3 reçetesiyle gelir).
++Bölüm 2.2 ve 2.3'teki akış birebir izlenir: **Rapor → Kullanıcı Onayı → Sıralı Düzeltme → `dotnet build` Doğrulaması → Wiki `REVIEW` Kaydı.** Yapılan bir düzeltmenin yan etkisi olarak yeni bir uç durum (*edge case*) ortaya çıkarsa gizlenmez, ayrı bir bulgu olarak raporlanır.
+ 
+ ---
+ 
+ ## 4. 📐 Büyük / Çok Dosyalı Özellikler İçin Plan Modu
+ 
+-**Ne Zaman Kullanılır:** Yeni bir iş modülü/entity eklenmesi, kimlik doğrulama akışının genişletilmesi gibi **3+ dosyayı veya birden fazla katmanı (`Repositories`, `Services`, `API`) etkileyen** isteklerde.
++**Ne Zaman Kullanılır:** Yeni bir iş modülü/entity eklenmesi, kimlik doğrulama akışının genişletilmesi, önbellekleme/loglama altyapısının değiştirilmesi gibi **3+ dosyayı veya birden fazla katmanı (`Repositories`, `Services`, `API`) etkileyen** isteklerde.
+ 
+ ### 4.1. Planlama ve Uygulama Akışı
+-1. **Netleştirici Sorular:** İstek belirsizse kullanıcıya çoktan seçmeli (önerilen seçenek işaretli) sorular yöneltilir.
+-2. **Plan Modu (Salt Okuma):** Kullanıcı onayı alınana kadar hiçbir kaynak kod dosyası değiştirilmez. [`README.md`](../README.md) Bölüm 5'teki **"Adım Adım Yeni Bir Feature / Entity Ekleme Rehberi"** referans alınır.
++1. **Netleştirici Sorular:** İstek belirsizse kullanıcıya çoktan seçmeli (önerilen seçenek işaretli) sorular yöneltilir (ör. *"Sipariş (`Order`) modülünde stok düşümü senkron olarak `OrderService` içinde mi yapılsın, yoksa ayrı bir adım olarak mı?"*).
++2. **Plan Modu (Salt Okuma):** Kullanıcı onayı alınana kadar hiçbir kaynak kod dosyası değiştirilmez. [`README.md`](../README.md) Bölüm 3'teki **"Yeni Bir Özellik (Feature) Ekleme Adım Adım Kontrol Listesi"** referans alınır.
+ 3. **Somut Plan Dosyası:**
+    - **Bağlam (Context):** Özelliğin amacı ve mimari yerleşimi.
+    - **Katman Bazlı Dosya Tasarımı:**
+-     1. `ProjectApp.Repositories`: Entity (`BaseEntity<Guid>`, `AuditableEntity`), `IEntityTypeConfiguration<T>`, `AppDbContext` `DbSet`. (IUnitOfWork ve IGenericRepository opsiyonel reçeteyle gelir; denetim kullanıcı alanları S2/S3 reçetesiyle gelir).
+-     2. `ProjectApp.Services`: Request/Response `record` DTO'ları, `AbstractValidator<T>`, Mapster `IRegister` profili, `I<Entity>Service` & `<Entity>Service` (`AppDbContext` enjekte, `ServiceResult<T>`), `ServiceExtensions` DI kaydı.
+-     3. `ProjectApp.API`: `CustomBaseController` tabanlı Controller; okuma uçları anonim, yazma uçları `[Authorize(Roles = RoleNames.Admin)]`. (NotFoundFilter opsiyonel reçeteyle gelir).
++     1. `ProjectApp.Repositories`: Entity (`BaseEntity<Guid>`, `IAuditEntity`), `IEntityTypeConfiguration<T>` ve `AppDbContext` `DbSet`.
++     2. `ProjectApp.Services`: Request/Response `record` DTO'ları, `AbstractValidator<T>`, Mapster `IRegister` profili, `I<Entity>Service` & `<Entity>Service` (`ServiceResult<T>`), `ServiceExtensions` DI kaydı.
++     3. `ProjectApp.API`: `CustomBaseController` tabanlı Controller; okuma uçları anonim, yazma uçları `[Authorize(Roles = RoleNames.Admin)]`.
+    - **Sıralı Adım Listesi:** Her adımda hangi dosyanın yazılacağı ve nasıl doğrulanacağı.
+-   - **Riskler ve Edge Case'ler:** Benzersizlik kısıtları, Foreign Key ilişkileri, yetki kuralları. (Soft delete ve RowVersion S2/S3 reçetesiyle gelir).
++   - **Riskler ve Edge Case'ler:** Soft-delete davranışı, Foreign Key ilişkileri, yetki kuralları.
+ 4. **Onay:** Plan kullanıcıya sunulur; onay alınmadan kod yazımına geçilmez.
+ 5. **Sıralı Uygulama:** Plandaki adımlar **birebir sırayla** (`Repositories` → `Services` → `API`) uygulanır ve her katman tamamlandığında derleme kontrolü yapılır.
+ 
+ ### 4.2. Kapsam Disiplini (KISS / YAGNI)
+ Plan yazarken **bilinçli kapsam dışı bırakma** kararları açıkça not edilir (ör. *"Bu aşamada yalnızca CRUD ve sayfalama uç noktaları eklenecektir; Excel dışa aktarma talep edilmediği için kapsam dışı bırakılmıştır"*). Gereksiz soyutlama ve şişkinlikten (*bloat*) kaçınılır.
+-- **Seviyenin üstündeki özelliği ekleme; gerekirse reçeteyi öner.**
+ 
+ ---
+ 
+@@ -143,7 +170,7 @@ Kod değişikliği çalışma zamanı davranışını (DI kayıtları, EF Core s
+ - **Dil:** Tüm commit mesajları **Türkçe** yazılır.
+ - **Türkçe Karakter Hassasiyeti:** `ı, ğ, ü, ş, ö, ç, İ, Ğ, Ü, Ş, Ö, Ç` harfleri eksiksiz ve doğru kullanılır; ASCII karşılıklarıyla (`i, g, u, s, o, c`) değiştirilmez.
+ - **AI Referansı Yok:** Commit mesajına veya PR açıklamasına `"Co-Authored-By"`, `"Generated with"`, 🤖 gibi yapay zeka/asistan referansları **kesinlikle eklenmez**.
+-- **Biçim:** Kısa emir kipinde özet satırı (ör. `Sipariş modülü servisini ekle`), gerekirse boş satırdan sonra madde madde "ne değişti" gövdesi.
++- **Biçim:** Kısa emir kipinde özet satırı (ör. `Sipariş modülü ve stok doğrulama servisini ekle`), gerekirse boş satırdan sonra madde madde "ne değişti" gövdesi.
+ - **Commit Öncesi Kontrol:** `git status` ile staged dosyalar gözden geçirilir; `.gitignore` dosyasının `bin/`, `obj/`, `.vs/`, `logs/` gibi geçici çıktıları dışarıda bıraktığı ve hassas bir bilginin (`appsettings.Production.json`, gerçek bağlantı şifreleri) yanlışlıkla eklenmediği doğrulanır.
+ 
+ ---
+@@ -153,5 +180,5 @@ Kod değişikliği çalışma zamanı davranışını (DI kayıtları, EF Core s
+ 1. **Anayasaya Tam Sadakat:** [`README.md`](../README.md) içindeki 5 Temel Sistem Kuralı (Yasaklı paketler, `Feature-Service` & `ServiceResult<T>`, `CustomBaseController`, `Guid.CreateVersion7()`, `Mapster`) hiçbir koşulda esnetilemez.
+ 2. **Proaktif Ama Sessiz Değil:** Bir düzeltme yaparken fark edilen yan bulgular (ör. *"bu sırada şu serviste de `AsNoTracking` eksikti, raporluyorum"*) kullanıcıya açıkça bildirilir, gizlenmez.
+ 3. **Kapsamı İstekle Sınırla:** Açıkça istenmeyen genişletmeler yapılmadan önce ya sorulur ya da planda gerekçeli olarak kapsam dışı bırakılır.
+-4. **Dokümantasyon Her Zaman Güncel:** Kod değişikliği ile `README.md` güncellemesi tek bir bütün sayılır — biri yapılıp diğeri sonraya bırakılmaz. (docs/wiki/ S2→S3 reçetesiyle gelir).
+-5. **Silmeden Önce Referans Tara:** Bir sınıf, DTO veya kavram kaldırıldığında DI kayıtları ve `README.md` içindeki tüm referansları güncellenir; kırık link veya geçersiz bilgi bırakılmaz. (docs/wiki/ S2→S3 reçetesiyle gelir).
++4. **Dokümantasyon ve Wiki Her Zaman Güncel:** Kod değişikliği ile `docs/wiki/` (ve gerekirse `README.md`) güncellemesi tek bir bütün sayılır — biri yapılıp diğeri sonraya bırakılmaz.
++5. **Silmeden Önce Referans Tara:** Bir sınıf, DTO veya kavram kaldırıldığında DI kayıtları, `README.md` ve `docs/wiki/` içindeki tüm referansları güncellenir; kırık link veya geçersiz bilgi bırakılmaz.
+diff --git a/tests/ProjectApp.IntegrationTests/SecurityEndpointsTests.cs b/tests/ProjectApp.IntegrationTests/SecurityEndpointsTests.cs
+index 89fb579..a9cd98e 100644
+--- a/tests/ProjectApp.IntegrationTests/SecurityEndpointsTests.cs
++++ b/tests/ProjectApp.IntegrationTests/SecurityEndpointsTests.cs
+@@ -50,6 +50,25 @@ public class SecurityEndpointsTests(CustomWebApplicationFactory factory) : IClas
+         Assert.Equal(HttpStatusCode.OK, login.StatusCode);
+     }
+ 
++    [Fact]
++    public async Task SilinenAdmin_EskiTokenIleKatalogaYazamaz()
++    {
++        using var client = factory.CreateClient();
++        // Son aktif Admin hesabını silemez (400); test sırasından bağımsız olsun diye önce ikinci bir Admin oluşturulur.
++        await factory.GetAdminAccessTokenAsync(client, Api);
++        var adminToken = await factory.GetAdminAccessTokenAsync(client, Api);
++        client.Authorize(adminToken);
++
++        var delete = await client.SendAsync(new HttpRequestMessage(HttpMethod.Delete, $"{Api}/users/account")
++        {
++            Content = JsonContent.Create(new { currentPassword = TestHelpers.Password })
++        }, TestContext.Current.CancellationToken);
++        Assert.Equal(HttpStatusCode.NoContent, delete.StatusCode);
++
++        var create = await client.PostAsJsonAsync($"{Api}/categories", new { name = $"Kat{Guid.NewGuid():N}"[..20] }, TestContext.Current.CancellationToken);
++        Assert.Equal(HttpStatusCode.Unauthorized, create.StatusCode);
++    }
++
+     [Fact]
+     public async Task Login_BesYanlisDenemedenSonra_DogruSifreDe401Doner()
+     {
+@@ -66,6 +85,24 @@ public class SecurityEndpointsTests(CustomWebApplicationFactory factory) : IClas
+         Assert.Equal(HttpStatusCode.Unauthorized, correct.StatusCode);
+     }
+ 
++    [Fact]
++    public async Task ConfirmEmailChange_HataliTokenlarLockoutSayacinaYansir()
++    {
++        using var client = factory.CreateClient();
++        var (_, tokens) = await TestHelpers.RegisterAndLoginAsync(factory, client, Api);
++        client.Authorize(tokens.AccessToken);
++        var newEmail = $"yeni-{Guid.NewGuid():N}@example.com";
++
++        for (var i = 0; i < MaxFailedAttempts; i++)
++        {
++            var bad = await client.PostAsJsonAsync($"{Api}/users/confirm-email-change", new { newEmail, token = "sahte" }, TestContext.Current.CancellationToken);
++            Assert.Equal(HttpStatusCode.BadRequest, bad.StatusCode);
++        }
++
++        var locked = await client.PostAsJsonAsync($"{Api}/users/confirm-email-change", new { newEmail, token = "sahte" }, TestContext.Current.CancellationToken);
++        Assert.Equal(HttpStatusCode.Forbidden, locked.StatusCode);
++    }
++
+     [Fact]
+     public async Task ProfilGuncelleme_204DonerVeProfildeGorunur()
+     {
+@@ -82,6 +119,50 @@ public class SecurityEndpointsTests(CustomWebApplicationFactory factory) : IClas
+         Assert.Equal("Güncel Ad", after!.Data!.FullName);
+     }
+ 
++    // 409 davranışı SQLite'ta da çalışır: TestAppDbContext her kayıtta yeni RowVersion üretir.
++    [Fact]
++    public async Task StokGuncelleme_RowVersionGonderilmezse_400Doner()
++    {
++        using var client = factory.CreateClient();
++        client.Authorize(await factory.GetAdminAccessTokenAsync(client, Api));
++        var productId = await CreateProductAsync(client, price: 10m);
++
++        var response = await client.PatchAsJsonAsync($"{Api}/products/stock", new { productId, quantity = 7 }, TestContext.Current.CancellationToken);
++
++        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
++    }
++
++    [Fact]
++    public async Task UrunGuncelleme_AyniEskiRowVersionIkinciKez_409Doner()
++    {
++        using var client = factory.CreateClient();
++        client.Authorize(await factory.GetAdminAccessTokenAsync(client, Api));
++        var categoryId = await CreateCategoryForConcurrencyAsync(client);
++        var created = await client.PostAsJsonAsync($"{Api}/products",
++            new { name = $"Esz-{Guid.NewGuid():N}"[..15], price = 10m, stock = 10, categoryId }, TestContext.Current.CancellationToken);
++        var id = (await created.ReadDataAsync<IdResponse>()).Id;
++
++        // GET ile guncel rowVersion alinir; ilk PUT 204, ayni eski rowVersion ile ikinci PUT 409 doner.
++        var current = await client.GetFromJsonAsync<ApiResponse<ConcurrencyProductItem>>($"{Api}/products/{id}", TestContext.Current.CancellationToken);
++        var stale = current!.Data!.RowVersion;
++        var body = new { name = $"Yeni-{Guid.NewGuid():N}"[..15], price = 12m, stock = 5, categoryId, rowVersion = stale };
++
++        var first = await client.PutAsJsonAsync($"{Api}/products/{id}", body, TestContext.Current.CancellationToken);
++        var second = await client.PutAsJsonAsync($"{Api}/products/{id}", body, TestContext.Current.CancellationToken);
++
++        Assert.Equal(HttpStatusCode.NoContent, first.StatusCode);
++        Assert.Equal(HttpStatusCode.Conflict, second.StatusCode);
++    }
++
++    private sealed record ConcurrencyProductItem(Guid Id, byte[] RowVersion);
++
++    private static async Task<Guid> CreateCategoryForConcurrencyAsync(HttpClient client)
++    {
++        var response = await client.PostAsJsonAsync($"{Api}/categories", new { name = $"Kat{Guid.NewGuid():N}"[..20] }, TestContext.Current.CancellationToken);
++        response.EnsureSuccessStatusCode();
++        return (await response.ReadDataAsync<IdResponse>()).Id;
++    }
++
+     [Theory]
+     [InlineData("100000000000000000")] // decimal(18,2) taşması
+     [InlineData("10.999")]             // 2'den fazla ondalık
+@@ -99,6 +180,24 @@ public class SecurityEndpointsTests(CustomWebApplicationFactory factory) : IClas
+         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+     }
+ 
++    [Fact]
++    public async Task KorelasyonKimligi_GecerliIseYanittaAynenDoner_GecersizseYenisiUretilir()
++    {
++        using var client = factory.CreateClient();
++
++        using var valid = new HttpRequestMessage(HttpMethod.Get, "/health");
++        valid.Headers.Add("X-Correlation-Id", "istek-123");
++        var validResponse = await client.SendAsync(valid, TestContext.Current.CancellationToken);
++        Assert.Equal("istek-123", validResponse.Headers.GetValues("X-Correlation-Id").Single());
++
++        using var invalid = new HttpRequestMessage(HttpMethod.Get, "/health");
++        invalid.Headers.TryAddWithoutValidation("X-Correlation-Id", "kötü değer\r\nsahte-log");
++        var invalidResponse = await client.SendAsync(invalid, TestContext.Current.CancellationToken);
++        var generated = invalidResponse.Headers.GetValues("X-Correlation-Id").Single();
++        Assert.DoesNotContain(" ", generated);
++        Assert.NotEqual("istek-123", generated);
++    }
++
+     private sealed record ProfileData(Guid Id, string FullName, string UserName, string Email);
+ 
+     private static async Task<Guid> CreateCategoryAsync(HttpClient client)
+diff --git a/tests/ProjectApp.IntegrationTests/TestAppDbContext.cs b/tests/ProjectApp.IntegrationTests/TestAppDbContext.cs
+index 1ddfcc9..6cc69a8 100644
+--- a/tests/ProjectApp.IntegrationTests/TestAppDbContext.cs
++++ b/tests/ProjectApp.IntegrationTests/TestAppDbContext.cs
+@@ -1,10 +1,10 @@
+ using Microsoft.EntityFrameworkCore;
+ using ProjectApp.Repositories;
+-
+ namespace ProjectApp.IntegrationTests;
+ 
+ /// <summary>
+-/// SQLite <c>rowversion</c> üretmez; bu yüzden testlerde RowVersion alanı sıradan bir kolon gibi davranır.
++/// SQLite <c>rowversion</c> üretmez. Bu context RowVersion'ı concurrency token olarak tutar ve her kayıtta
++/// yeni bir değer üretir; böylece iyimser eşzamanlılık kontrolü (409) SQLite'ta da gerçekten çalışır.
+ /// Üretim kodu (AppDbContext) değişmez, yalnızca test DbContext'i modeli düzeltir.
+ /// </summary>
+ public class TestAppDbContext(DbContextOptions<AppDbContext> options) : AppDbContext(options)
+@@ -15,12 +15,37 @@ public class TestAppDbContext(DbContextOptions<AppDbContext> options) : AppDbCon
+ 
+         foreach (var entityType in builder.Model.GetEntityTypes())
+         {
+-            if (entityType.FindProperty("RowVersion") is null) continue;
++            if (entityType.FindProperty(nameof(AuditableEntity.RowVersion)) is null) continue;
+ 
+             builder.Entity(entityType.ClrType)
+-                .Property("RowVersion")
+-                .IsConcurrencyToken(false)
++                .Property(nameof(AuditableEntity.RowVersion))
++                .IsConcurrencyToken()
+                 .ValueGeneratedNever();
+         }
+     }
++
++    public override int SaveChanges(bool acceptAllChangesOnSuccess)
++    {
++        StampRowVersions();
++        return base.SaveChanges(acceptAllChangesOnSuccess);
++    }
++
++    public override Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
++    {
++        StampRowVersions();
++        return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
++    }
++
++    // Eklenen/değişen/silinen (soft delete'e çevrilecek) her AuditableEntity için yeni RowVersion üretir.
++    // Orijinal değer istemcinin gönderdiği değerdir; WHERE koşulu onunla çalışır.
++    private void StampRowVersions()
++    {
++        foreach (var entry in ChangeTracker.Entries<AuditableEntity>())
++        {
++            if (entry.State is EntityState.Added or EntityState.Modified or EntityState.Deleted)
++            {
++                entry.Property(x => x.RowVersion).CurrentValue = Guid.NewGuid().ToByteArray();
++            }
++        }
++    }
+ }
+diff --git a/tests/ProjectApp.UnitTests/ProductServiceTests.cs b/tests/ProjectApp.UnitTests/ProductServiceTests.cs
+index c51ed93..a964667 100644
+--- a/tests/ProjectApp.UnitTests/ProductServiceTests.cs
++++ b/tests/ProjectApp.UnitTests/ProductServiceTests.cs
+@@ -1,6 +1,7 @@
+ using System.Net;
+ using Mapster;
+ using MapsterMapper;
++using Microsoft.EntityFrameworkCore;
+ using ProjectApp.Repositories;
+ using ProjectApp.Repositories.Categories;
+ using ProjectApp.Repositories.Products;
+@@ -8,6 +9,7 @@ using ProjectApp.Services;
+ using ProjectApp.Services.Features.Products;
+ using ProjectApp.Services.Features.Products.Create;
+ using ProjectApp.Services.Features.Products.Update;
++using ProjectApp.Services.Features.Products.UpdateStock;
+ 
+ namespace ProjectApp.UnitTests;
+ 
+@@ -71,20 +73,78 @@ public sealed class ProductServiceTests : IDisposable
+     }
+ 
+     [Fact]
+-    public async Task UpdateAsync_Basarili_204DonerVeGunceller()
++    public async Task UpdateAsync_IstemcininRowVersionuOrijinalDegerOlarakAyarlanir()
+     {
+         var category = new Category { Name = "Kırtasiye" };
+-        var product = new Product { Name = "Kalem", Price = 10, Stock = 5, Category = category };
++        var rowVersion = new byte[] { 1, 2, 3, 4, 5, 6, 7, 8 };
++        var product = new Product { Name = "Kalem", Price = 10, Stock = 5, Category = category, RowVersion = rowVersion };
+         _context.Categories.Add(category);
+         _context.Products.Add(product);
+         await _context.SaveChangesAsync(TestContext.Current.CancellationToken);
+         _context.ChangeTracker.Clear();
+ 
+-        var result = await _sut.UpdateAsync(product.Id, new UpdateProductRequest("Kursun Kalem", 12, 6, category.Id), TestContext.Current.CancellationToken);
++        var result = await _sut.UpdateAsync(product.Id, new UpdateProductRequest("Kursun Kalem", 12, 6, category.Id, rowVersion), TestContext.Current.CancellationToken);
+ 
+         Assert.Equal(HttpStatusCode.NoContent, result.Status);
+         var updatedProduct = await _context.Products.FindAsync([product.Id], TestContext.Current.CancellationToken);
+         Assert.NotNull(updatedProduct);
+         Assert.Equal("Kursun Kalem", updatedProduct.Name);
+     }
++
++    [Fact]
++    public async Task UpdateAsync_FarkliRowVersion_DbUpdateConcurrencyExceptionFirlatir()
++    {
++        var category = new Category { Name = "Kırtasiye" };
++        var dbRowVersion = new byte[] { 1, 2, 3, 4, 5, 6, 7, 8 };
++        var product = new Product { Name = "Kalem", Price = 10, Stock = 5, Category = category, RowVersion = dbRowVersion };
++        _context.Categories.Add(category);
++        _context.Products.Add(product);
++        await _context.SaveChangesAsync(TestContext.Current.CancellationToken);
++        _context.ChangeTracker.Clear();
++
++        var clientRowVersion = new byte[] { 8, 7, 6, 5, 4, 3, 2, 1 };
++        var request = new UpdateProductRequest("Kursun Kalem", 12, 6, category.Id, clientRowVersion);
++
++        await Assert.ThrowsAsync<DbUpdateConcurrencyException>(() =>
++            _sut.UpdateAsync(product.Id, request, TestContext.Current.CancellationToken));
++    }
++
++    [Fact]
++    public async Task UpdateStockAsync_IstemcininRowVersionuOrijinalDegerOlarakAyarlanir()
++    {
++        var category = new Category { Name = "Kırtasiye" };
++        var rowVersion = new byte[] { 1, 2, 3, 4, 5, 6, 7, 8 };
++        var product = new Product { Name = "Kalem", Price = 10, Stock = 5, Category = category, RowVersion = rowVersion };
++        _context.Categories.Add(category);
++        _context.Products.Add(product);
++        await _context.SaveChangesAsync(TestContext.Current.CancellationToken);
++        _context.ChangeTracker.Clear();
++
++        var result = await _sut.UpdateStockAsync(
++            new UpdateProductStockRequest(product.Id, 7, rowVersion),
++            TestContext.Current.CancellationToken);
++
++        Assert.Equal(HttpStatusCode.NoContent, result.Status);
++        var updatedProduct = await _context.Products.FindAsync([product.Id], TestContext.Current.CancellationToken);
++        Assert.NotNull(updatedProduct);
++        Assert.Equal(7, updatedProduct.Stock);
++    }
++
++    [Fact]
++    public async Task UpdateStockAsync_FarkliRowVersion_DbUpdateConcurrencyExceptionFirlatir()
++    {
++        var category = new Category { Name = "Kırtasiye" };
++        var dbRowVersion = new byte[] { 1, 2, 3, 4, 5, 6, 7, 8 };
++        var product = new Product { Name = "Kalem", Price = 10, Stock = 5, Category = category, RowVersion = dbRowVersion };
++        _context.Categories.Add(category);
++        _context.Products.Add(product);
++        await _context.SaveChangesAsync(TestContext.Current.CancellationToken);
++        _context.ChangeTracker.Clear();
++
++        var clientRowVersion = new byte[] { 8, 7, 6, 5, 4, 3, 2, 1 };
++        var request = new UpdateProductStockRequest(product.Id, 7, clientRowVersion);
++
++        await Assert.ThrowsAsync<DbUpdateConcurrencyException>(() =>
++            _sut.UpdateStockAsync(request, TestContext.Current.CancellationToken));
++    }
+ }
+diff --git a/tests/ProjectApp.UnitTests/TestDb.cs b/tests/ProjectApp.UnitTests/TestDb.cs
+index fc6bd98..c22185b 100644
+--- a/tests/ProjectApp.UnitTests/TestDb.cs
++++ b/tests/ProjectApp.UnitTests/TestDb.cs
+@@ -23,6 +23,21 @@ internal static class TestDb
+ 
+ internal sealed class UnitTestDbContext(DbContextOptions<AppDbContext> options, SqliteConnection connection) : AppDbContext(options)
+ {
++    protected override void OnModelCreating(ModelBuilder builder)
++    {
++        base.OnModelCreating(builder);
++
++        foreach (var entityType in builder.Model.GetEntityTypes())
++        {
++            if (entityType.FindProperty(nameof(AuditableEntity.RowVersion)) is null) continue;
++
++            builder.Entity(entityType.ClrType)
++                .Property(nameof(AuditableEntity.RowVersion))
++                .IsConcurrencyToken(true)
++                .ValueGeneratedNever();
++        }
++    }
++
+     public override void Dispose()
+     {
+         base.Dispose();
+diff --git a/tests/ProjectApp.UnitTests/ValidatorTests.cs b/tests/ProjectApp.UnitTests/ValidatorTests.cs
+index 8783102..1fe3886 100644
+--- a/tests/ProjectApp.UnitTests/ValidatorTests.cs
++++ b/tests/ProjectApp.UnitTests/ValidatorTests.cs
+@@ -2,6 +2,7 @@ using System.Globalization;
+ using ProjectApp.Services.Features.Auth.Dtos;
+ using ProjectApp.Services.Features.Auth.Validators;
+ using ProjectApp.Services.Features.Products.Create;
++using ProjectApp.Services.Features.Products.UpdateStock;
+ 
+ namespace ProjectApp.UnitTests;
+ 
+@@ -40,6 +41,17 @@ public class ValidatorTests
+         Assert.True(result.IsValid);
+     }
+ 
++    [Fact]
++    public void UpdateStock_RowVersionYoksa_HataVerir()
++    {
++        var validator = new UpdateProductStockRequestValidator();
++
++        var result = validator.Validate(new UpdateProductStockRequest(Guid.NewGuid(), 5, []));
++
++        Assert.False(result.IsValid);
++        Assert.Contains(result.Errors, e => e.PropertyName == nameof(UpdateProductStockRequest.RowVersion));
++    }
++
+     [Theory]
+     [InlineData(0)]
+     [InlineData(-1)]

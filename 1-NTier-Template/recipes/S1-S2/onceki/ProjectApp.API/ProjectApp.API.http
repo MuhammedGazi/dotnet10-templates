@@ -1,0 +1,95 @@
+@host = http://localhost:5091
+@baseUrl = {{host}}/api
+
+# Visual Studio / VS Code (REST Client) ile çalıştırılabilir hazır istekler.
+# Sırayla çalıştırın: önce "admin login", ardından diğer istekler {{adminToken}} ve önceki yanıtları kullanır.
+# Admin şifresi appsettings.Development.json -> Seed:AdminPassword değeridir (yalnızca geliştirme).
+
+### Sağlık kontrolü (liveness)
+GET {{host}}/health
+
+### Sağlık kontrolü (readiness: SQL Server bağlantısı)
+GET {{host}}/health/ready
+
+### Admin login
+# @name adminLogin
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "admin@admin.com",
+  "password": "Password12*"
+}
+
+###
+@adminToken = {{adminLogin.response.body.$.data.accessToken}}
+
+### Oturum açmış kullanıcı (auth/me)
+GET {{baseUrl}}/auth/me
+Authorization: Bearer {{adminToken}}
+
+### Kategori oluştur (yalnızca Admin)
+# @name createCategory
+POST {{baseUrl}}/categories
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "name": "Kırtasiye"
+}
+
+###
+@categoryId = {{createCategory.response.body.$.data.id}}
+
+### Kategori getir
+GET {{baseUrl}}/categories/{{categoryId}}
+
+### Kategori güncelle
+PUT {{baseUrl}}/categories/{{categoryId}}
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "name": "Kırtasiye Ürünleri"
+}
+
+### Ürün oluştur (yalnızca Admin)
+# @name createProduct
+POST {{baseUrl}}/products
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "name": "Kurşun Kalem",
+  "price": 12.5,
+  "stock": 100,
+  "categoryId": "{{categoryId}}"
+}
+
+###
+@productId = {{createProduct.response.body.$.data.id}}
+
+### Ürün getir
+GET {{baseUrl}}/products/{{productId}}
+
+### Ürün güncelle
+PUT {{baseUrl}}/products/{{productId}}
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "name": "Kurşun Kalem HB",
+  "price": 14,
+  "stock": 90,
+  "categoryId": "{{categoryId}}"
+}
+
+### Ürün listesi
+GET {{baseUrl}}/products
+
+### Sayfalı ürün listesi
+GET {{baseUrl}}/products/paged?pageNumber=1&pageSize=10
+
+### Kategori ve ürünleri
+GET {{baseUrl}}/categories/{{categoryId}}/products
+

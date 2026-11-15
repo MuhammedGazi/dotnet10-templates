@@ -1,0 +1,10 @@
+M	Core/ProjectApp.Application/Contracts/Persistence/IProductRepository.cs
+M	Core/ProjectApp.Application/Features/Products/IProductService.cs
+M	Core/ProjectApp.Application/Features/Products/ProductService.cs
+M	Directory.Packages.props
+A	Infrastructure/ProjectApp.Persistence/Context/SqlConnectionFactory.cs
+M	Infrastructure/ProjectApp.Persistence/ProjectApp.Persistence.csproj
+M	Infrastructure/ProjectApp.Persistence/Repositories/ProductRepository.cs
+M	Infrastructure/ProjectApp.Persistence/ServiceRegistration.cs
+M	Presentation/ProjectApp.WebAPI/Controllers/ProductsController.cs
+M	Presentation/ProjectApp.WebAPI/ProjectApp.WebAPI.http

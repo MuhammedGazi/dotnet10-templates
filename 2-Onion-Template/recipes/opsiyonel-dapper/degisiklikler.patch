@@ -1,0 +1,155 @@
+diff --git a/Core/ProjectApp.Application/Contracts/Persistence/IProductRepository.cs b/Core/ProjectApp.Application/Contracts/Persistence/IProductRepository.cs
+index f8030a1..9992987 100644
+--- a/Core/ProjectApp.Application/Contracts/Persistence/IProductRepository.cs
++++ b/Core/ProjectApp.Application/Contracts/Persistence/IProductRepository.cs
+@@ -1,7 +1,11 @@
++using ProjectApp.Application.Features.Products.Dto;
+ using ProjectApp.Domain.Entities;
+ 
+ namespace ProjectApp.Application.Contracts.Persistence;
+ 
+ public interface IProductRepository : IGenericRepository<Product>
+ {
++    /// <summary>[Hazır örnek] EF Core ile en pahalı N ürün; aynı sorgunun Dapper karşılığıyla karşılaştırma için tutulur (uç bağlı değil).</summary>
++    Task<List<Product>> GetTopPriceProductsAsync(int count, CancellationToken cancellationToken = default);
++    Task<List<ProductDto>> GetTopPricedProductsWithDapperAsync(int count, CancellationToken cancellationToken = default);
+ }
+diff --git a/Core/ProjectApp.Application/Features/Products/IProductService.cs b/Core/ProjectApp.Application/Features/Products/IProductService.cs
+index d979eb0..30e5702 100644
+--- a/Core/ProjectApp.Application/Features/Products/IProductService.cs
++++ b/Core/ProjectApp.Application/Features/Products/IProductService.cs
+@@ -10,6 +10,7 @@ namespace ProjectApp.Application.Features.Products;
+ public interface IProductService
+ {
+     Task<ServiceResult<List<ProductDto>>> GetAllListAsync(CancellationToken cancellationToken = default);
++    Task<ServiceResult<List<ProductDto>>> GetTopPricedProductsWithDapperAsync(int count, CancellationToken cancellationToken = default);
+     Task<ServiceResult<PagedResult<ProductDto>>> GetPagedAllListAsync(PagedRequest request, CancellationToken cancellationToken = default);
+     Task<ServiceResult<ProductDto>> GetByIdAsync(Guid id, CancellationToken cancellationToken = default);
+     Task<ServiceResult<CreateProductResponse>> CreateAsync(CreateProductRequest request, CancellationToken cancellationToken = default);
+diff --git a/Core/ProjectApp.Application/Features/Products/ProductService.cs b/Core/ProjectApp.Application/Features/Products/ProductService.cs
+index ec139f6..75d2b9e 100644
+--- a/Core/ProjectApp.Application/Features/Products/ProductService.cs
++++ b/Core/ProjectApp.Application/Features/Products/ProductService.cs
+@@ -37,6 +37,12 @@ public class ProductService(
+         return ServiceResult<List<ProductDto>>.Success(productDtos);
+     }
+ 
++    public async Task<ServiceResult<List<ProductDto>>> GetTopPricedProductsWithDapperAsync(int count, CancellationToken cancellationToken = default)
++    {
++        var products = await productRepository.GetTopPricedProductsWithDapperAsync(count, cancellationToken);
++        return ServiceResult<List<ProductDto>>.Success(products);
++    }
++
+     public async Task<ServiceResult<PagedResult<ProductDto>>> GetPagedAllListAsync(PagedRequest request, CancellationToken cancellationToken = default)
+     {
+         var (products, totalCount) = await productRepository.GetAllPagedAsync(request.PageNumber, request.PageSize, cancellationToken);
+diff --git a/Directory.Packages.props b/Directory.Packages.props
+index 70ba180..5157b69 100644
+--- a/Directory.Packages.props
++++ b/Directory.Packages.props
+@@ -7,6 +7,7 @@
+   <ItemGroup>
+     <PackageVersion Include="Asp.Versioning.Mvc.ApiExplorer" Version="10.2.1" />
+     <PackageVersion Include="AspNetCore.HealthChecks.SqlServer" Version="9.0.0" />
++    <PackageVersion Include="Dapper" Version="2.1.89" />
+     <PackageVersion Include="FluentValidation.DependencyInjectionExtensions" Version="12.2.0" />
+     <PackageVersion Include="Mapster" Version="10.0.14" />
+     <PackageVersion Include="Mapster.DependencyInjection" Version="10.0.14" />
+diff --git a/Infrastructure/ProjectApp.Persistence/ProjectApp.Persistence.csproj b/Infrastructure/ProjectApp.Persistence/ProjectApp.Persistence.csproj
+index 2ec270b..96b754d 100644
+--- a/Infrastructure/ProjectApp.Persistence/ProjectApp.Persistence.csproj
++++ b/Infrastructure/ProjectApp.Persistence/ProjectApp.Persistence.csproj
+@@ -9,6 +9,7 @@
+   </ItemGroup>
+ 
+   <ItemGroup>
++    <PackageReference Include="Dapper" />
+     <PackageReference Include="Microsoft.AspNetCore.Identity.EntityFrameworkCore" />
+     <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" />
+     <PackageReference Include="Microsoft.EntityFrameworkCore.Tools">
+diff --git a/Infrastructure/ProjectApp.Persistence/Repositories/ProductRepository.cs b/Infrastructure/ProjectApp.Persistence/Repositories/ProductRepository.cs
+index bc499c0..0a1d3bf 100644
+--- a/Infrastructure/ProjectApp.Persistence/Repositories/ProductRepository.cs
++++ b/Infrastructure/ProjectApp.Persistence/Repositories/ProductRepository.cs
+@@ -1,10 +1,37 @@
+ using ProjectApp.Application.Contracts.Persistence;
++using ProjectApp.Application.Features.Products.Dto;
+ using ProjectApp.Domain.Entities;
+ using ProjectApp.Persistence.Context;
++using Dapper;
++using Microsoft.EntityFrameworkCore;
+ 
+ namespace ProjectApp.Persistence.Repositories;
+ 
+-public class ProductRepository(AppDbContext context)
++public class ProductRepository(AppDbContext context, ISqlConnectionFactory sqlConnectionFactory)
+     : GenericRepository<Product>(context), IProductRepository
+ {
++    public Task<List<Product>> GetTopPriceProductsAsync(int count, CancellationToken cancellationToken = default)
++    {
++        return Context.Products
++            .AsNoTracking()
++            .OrderByDescending(x => x.Price)
++            .Take(count)
++            .ToListAsync(cancellationToken);
++    }
++
++    public async Task<List<ProductDto>> GetTopPricedProductsWithDapperAsync(int count, CancellationToken cancellationToken = default)
++    {
++        // Seçilen kolonlar ProductDto'nun kurucu parametreleriyle birebir aynı sırada olmalıdır (Dapper record eşlemesi).
++        using var connection = sqlConnectionFactory.CreateConnection();
++        const string sql = """
++            SELECT TOP (@Count) Id, Name, Price, Stock, CategoryId, Created, RowVersion
++            FROM Products
++            WHERE IsDeleted = 0
++            ORDER BY Price DESC
++            """;
++
++        var command = new CommandDefinition(sql, new { Count = count }, cancellationToken: cancellationToken);
++        var products = await connection.QueryAsync<ProductDto>(command);
++        return products.ToList();
++    }
+ }
+diff --git a/Infrastructure/ProjectApp.Persistence/ServiceRegistration.cs b/Infrastructure/ProjectApp.Persistence/ServiceRegistration.cs
+index 9627c8b..e7a0b0a 100644
+--- a/Infrastructure/ProjectApp.Persistence/ServiceRegistration.cs
++++ b/Infrastructure/ProjectApp.Persistence/ServiceRegistration.cs
+@@ -68,6 +68,9 @@ public static class ServiceRegistration
+         services.AddScoped<IAuthService, AuthService>();
+         services.AddScoped<IUserService, UserService>();
+ 
++        // Dapper SQL Connection Factory
++        services.AddSingleton<ISqlConnectionFactory>(_ => new SqlConnectionFactory(connectionString));
++
+         // Repository & UnitOfWork Kayıtları
+         services.AddScoped(typeof(IGenericRepository<>), typeof(GenericRepository<>));
+         services.AddScoped<IProductRepository, ProductRepository>();
+diff --git a/Presentation/ProjectApp.WebAPI/Controllers/ProductsController.cs b/Presentation/ProjectApp.WebAPI/Controllers/ProductsController.cs
+index 321b722..46acb44 100644
+--- a/Presentation/ProjectApp.WebAPI/Controllers/ProductsController.cs
++++ b/Presentation/ProjectApp.WebAPI/Controllers/ProductsController.cs
+@@ -21,6 +21,10 @@ public class ProductsController(IProductService productService) : CustomBaseCont
+     public async Task<IActionResult> GetPaged([FromQuery] PagedRequest request, CancellationToken cancellationToken = default) =>
+         CreateActionResult(await productService.GetPagedAllListAsync(request, cancellationToken));
+ 
++    [HttpGet("top-priced")]
++    public async Task<IActionResult> GetTopPriced([FromQuery] int count = 5, CancellationToken cancellationToken = default) =>
++        CreateActionResult(await productService.GetTopPricedProductsWithDapperAsync(Math.Clamp(count, 1, 50), cancellationToken));
++
+     [HttpGet("{id:guid}")]
+     public async Task<IActionResult> GetById(Guid id, CancellationToken cancellationToken = default) =>
+         CreateActionResult(await productService.GetByIdAsync(id, cancellationToken));
+diff --git a/Presentation/ProjectApp.WebAPI/ProjectApp.WebAPI.http b/Presentation/ProjectApp.WebAPI/ProjectApp.WebAPI.http
+index 4b48a84..0bb1c1a 100644
+--- a/Presentation/ProjectApp.WebAPI/ProjectApp.WebAPI.http
++++ b/Presentation/ProjectApp.WebAPI/ProjectApp.WebAPI.http
+@@ -143,6 +143,9 @@ GET {{baseUrl}}/products
+ ### Sayfalı ürün listesi
+ GET {{baseUrl}}/products/paged?pageNumber=1&pageSize=10
+ 
++### En pahalı ürünler (Dapper örneği)
++GET {{baseUrl}}/products/top-priced?count=5
++
+ ### Kategori ve ürünleri
+ GET {{baseUrl}}/categories/{{categoryId}}/products
+ 

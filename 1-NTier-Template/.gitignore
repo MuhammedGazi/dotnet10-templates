@@ -1,0 +1,39 @@
+## Build ve Çıktı Klasörleri
+[Bb]in/
+[Oo]bj/
+out/
+dist/
+
+## IDE ve Editör Ayarları
+.vs/
+.vscode/
+.idea/
+.claude/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+## Hassas Yapılandırma ve Gizli Anahtarlar
+.env
+.env.*
+!.env.example
+# Gerçek gizli değerler ortam değişkeni / user-secrets / Key Vault ile verilir.
+# Yerel geçersiz kılma dosyaları (ör. appsettings.Development.local.json) depoya girmez.
+*.local.json
+*.pfx
+*.cer
+*.crt
+*.key
+
+## Loglama ve Geçici Dosyalar
+logs/
+*.log
+_ReSharper*/
+*.CrashDump
+
+## Test ve Kapsam Çıktıları
+TestResults/
+*.trx
+coverage/
+*.coverage

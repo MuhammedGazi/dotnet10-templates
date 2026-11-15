@@ -1,0 +1,171 @@
+@host = http://localhost:5091
+@baseUrl = {{host}}/api
+
+# Visual Studio / VS Code (REST Client) ile çalıştırılabilir hazır istekler.
+# Sırayla çalıştırın: önce "admin login", ardından diğer istekler {{adminToken}} ve önceki yanıtları kullanır.
+# Admin şifresi appsettings.Development.json -> Seed:AdminPassword değeridir (yalnızca geliştirme).
+
+### Sağlık kontrolü (liveness)
+GET {{host}}/health
+
+### Sağlık kontrolü (readiness: SQL Server bağlantısı)
+GET {{host}}/health/ready
+
+### Admin login
+# @name adminLogin
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "admin@admin.com",
+  "password": "Password12*"
+}
+
+###
+@adminToken = {{adminLogin.response.body.$.data.accessToken}}
+
+### Yeni kullanıcı kaydı (User rolü atanır)
+# Registration:AllowPublic=false (varsayılan) ise yalnızca Admin: token yoksa 401, User rolüyle 403. true ise token gerekmez.
+POST {{baseUrl}}/auth/register
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "fullName": "Deneme Kullanıcı",
+  "userName": "deneme1",
+  "email": "deneme1@example.com",
+  "password": "Deneme12*"
+}
+
+### Kullanıcı login
+# @name userLogin
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "deneme1@example.com",
+  "password": "Deneme12*"
+}
+
+### Token yenileme (refresh token rotasyonu)
+POST {{baseUrl}}/auth/refresh-token
+Content-Type: application/json
+
+{
+  "accessToken": "{{userLogin.response.body.$.data.accessToken}}",
+  "refreshToken": "{{userLogin.response.body.$.data.refreshToken}}"
+}
+
+### Oturum açmış kullanıcı (auth/me)
+GET {{baseUrl}}/auth/me
+Authorization: Bearer {{adminToken}}
+
+### Profil (users/me)
+GET {{baseUrl}}/users/me
+Authorization: Bearer {{adminToken}}
+
+###
+# Rol yönetimi (yalnızca Admin): targetUserId yerine kayıt yanıtındaki data.id değerini yazın.
+@targetUserId = 00000000-0000-0000-0000-000000000000
+
+### Kullanıcının rollerini getir (yoksa veya silinmişse 404)
+GET {{baseUrl}}/users/{{targetUserId}}/roles
+Authorization: Bearer {{adminToken}}
+
+### Kullanıcının rollerini değiştir (liste tamamen yerine geçer; olmayan rol / boş liste / son Admin'den Admin kaldırma 400)
+# Başarılıysa 204: hedef kullanıcının eski token'ları 401 olur, yeni rolleri tekrar girişte alır.
+PUT {{baseUrl}}/users/{{targetUserId}}/roles
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "roles": ["User", "Admin"]
+}
+
+### Kategori oluştur (yalnızca Admin)
+# @name createCategory
+POST {{baseUrl}}/categories
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "name": "Kırtasiye"
+}
+
+###
+@categoryId = {{createCategory.response.body.$.data.id}}
+
+### Kategori getir (rowVersion güncelleme için gerekli)
+# @name getCategory
+GET {{baseUrl}}/categories/{{categoryId}}
+
+### Kategori güncelle (eski rowVersion gönderilirse 409 döner)
+PUT {{baseUrl}}/categories/{{categoryId}}
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "name": "Kırtasiye Ürünleri",
+  "rowVersion": "{{getCategory.response.body.$.data.rowVersion}}"
+}
+
+### Ürün oluştur (yalnızca Admin)
+# @name createProduct
+POST {{baseUrl}}/products
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "name": "Kurşun Kalem",
+  "price": 12.5,
+  "stock": 100,
+  "categoryId": "{{categoryId}}"
+}
+
+###
+@productId = {{createProduct.response.body.$.data.id}}
+
+### Ürün getir
+# @name getProduct
+GET {{baseUrl}}/products/{{productId}}
+
+### Ürün güncelle
+PUT {{baseUrl}}/products/{{productId}}
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "name": "Kurşun Kalem HB",
+  "price": 14,
+  "stock": 90,
+  "categoryId": "{{categoryId}}",
+  "rowVersion": "{{getProduct.response.body.$.data.rowVersion}}"
+}
+
+### Ürünü yeniden oku (güncelleme RowVersion'ı değiştirdi)
+# @name getProductAfterUpdate
+GET {{baseUrl}}/products/{{productId}}
+
+### Stok güncelle (yeni stok miktarı; RowVersion güncel okumadan gelir, eskiyse 409)
+PATCH {{baseUrl}}/products/stock
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "productId": "{{productId}}",
+  "quantity": 75,
+  "rowVersion": "{{getProductAfterUpdate.response.body.$.data.rowVersion}}"
+}
+
+### Ürün listesi
+GET {{baseUrl}}/products
+
+### Sayfalı ürün listesi
+GET {{baseUrl}}/products/paged?pageNumber=1&pageSize=10
+
+### Kategori ve ürünleri
+GET {{baseUrl}}/categories/{{categoryId}}/products
+
+### Çıkış (refresh token ve access token geçersiz olur)
+POST {{baseUrl}}/auth/logout
+Authorization: Bearer {{adminToken}}

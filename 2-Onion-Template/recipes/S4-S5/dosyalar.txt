@@ -1,0 +1,14 @@
+M	AGENTS.md
+M	CLAUDE.md
+A	Core/ProjectApp.Application/Common/CacheKeys.cs
+A	Core/ProjectApp.Application/Contracts/Caching/ICacheService.cs
+M	Core/ProjectApp.Application/Features/Categories/CategoryService.cs
+M	Core/ProjectApp.Application/Features/Products/ProductService.cs
+A	Infrastructure/ProjectApp.Infrastructure/Caching/CacheService.cs
+M	Infrastructure/ProjectApp.Infrastructure/ServiceRegistration.cs
+M	README.md
+M	docs/AI_WORKFLOW.md
+M	docs/wiki/index.md
+A	tests/ProjectApp.UnitTests/CacheServiceTests.cs
+M	tests/ProjectApp.UnitTests/CategoryServiceTests.cs
+M	tests/ProjectApp.UnitTests/ProductServiceTests.cs

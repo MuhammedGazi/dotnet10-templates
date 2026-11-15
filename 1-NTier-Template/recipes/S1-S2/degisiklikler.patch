@@ -1,0 +1,1679 @@
+diff --git a/AGENTS.md b/AGENTS.md
+index cca96cd..16628bc 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -3,8 +3,8 @@
+ Ayrıntı için önce `README.md`, sonra `docs/AI_WORKFLOW.md` ve `recipes/README.md` okunur. Kod/identifier İngilizce; yorum ve kullanıcı mesajları Türkçe.
+ 
+ ## Seviye
+-- Şablon **S1 (Vitrin)** seviyesindedir. Projenin gerçek seviyesi `CLAUDE.md` "Seviye" bölümündedir.
+-- Seviyenin üstündeki özellik (refresh token, soft delete, RowVersion, domain event, cache…) **eklenmez**; gerekiyorsa `recipes/` altındaki reçete önerilir ve kullanıcıya sorulur.
++- Proje **S2 (Küçük ekip)** seviyesindedir. Projenin gerçek seviyesi `CLAUDE.md` "Seviye" bölümündedir.
++- Seviyenin üstündeki özellik (soft delete, RowVersion, audit kullanıcı alanları, rol yönetimi → S2-S3 reçetesi; domain event, versiyonlama, önbellek → Onion) **eklenmez**; gerekiyorsa `recipes/` altındaki reçete önerilir ve kullanıcıya sorulur.
+ - Kodda olmayan bir özelliği "en iyi uygulama" diye geri ekleme.
+ 
+ ## Katmanlar (tek yönlü bağımlılık)
+@@ -17,6 +17,7 @@ Ayrıntı için önce `README.md`, sonra `docs/AI_WORKFLOW.md` ve `recipes/READM
+ - Servis metotları `ServiceResult`/`ServiceResult<T>` döner; iş hatası için exception fırlatılmaz.
+ - ID `Guid` (`Guid.CreateVersion7()`); mapping yalnızca Mapster; her async metotta `CancellationToken`.
+ - Kullanıcı kimliği yalnızca `ICurrentUserService.UserId`; endpoint `userId` parametresi almaz (IDOR).
++- Register `Registration:AllowPublic` ayarına bağlıdır: false (varsayılan) ise yalnızca Admin kullanıcı ekler; true ise herkes kayıt olur ve `User` rolü alır (açık kayıtta e-posta doğrulaması ayrıca eklenir).
+ - Zaman için `TimeProvider`; `DateTime.UtcNow` kullanılmaz.
+ - Yasaklı paketler: AutoMapper, MediatR, Swashbuckle, MassTransit, FluentValidation.AspNetCore, FluentAssertions.
+ - Paket sürümleri yalnızca `Directory.Packages.props` içinde.
+@@ -26,11 +27,11 @@ Ayrıntı için önce `README.md`, sonra `docs/AI_WORKFLOW.md` ve `recipes/READM
+ 1. `AuditableEntity`'den türet (Created/Updated); configuration'da gerekiyorsa düz unique index; `DbSet` ekle.
+ 2. Request/Response/Dto `record`, validator, `IRegister` mapping.
+ 3. `I<Entity>Service` + servis (`AppDbContext` + `IMapper` enjekte) + `ServiceExtensions` kaydı; controller.
+-4. Unit (SQLite `TestDb`) + entegrasyon testi; `dotnet ef migrations add`; README güncelle.
++4. Unit (SQLite `TestDb`) + entegrasyon testi (kullanıcı gerekiyorsa `TestHelpers.RegisterAndLoginAsync`); `dotnet ef migrations add`; README güncelle.
+ 
+ ## Doğrulama
+ - `dotnet build ProjectApp.slnx`
+ - `dotnet test ProjectApp.slnx -v q`
+ 
+ ## Referans dosyalar
+-`README.md`, `docs/AI_WORKFLOW.md`, `recipes/README.md`, `Directory.Packages.props`, `ProjectApp.API/Program.cs`, `ProjectApp.Services/Features/Products/ProductService.cs`, `tests/ProjectApp.UnitTests/ProductServiceTests.cs`.
++`README.md`, `docs/AI_WORKFLOW.md`, `recipes/README.md`, `Directory.Packages.props`, `ProjectApp.API/Program.cs`, `ProjectApp.Services/Features/Products/ProductService.cs`, `tests/ProjectApp.UnitTests/ProductServiceTests.cs`, `tests/ProjectApp.IntegrationTests/TestHelpers.cs`.
+diff --git a/CLAUDE.md b/CLAUDE.md
+index fec8d21..6bc26a3 100644
+--- a/CLAUDE.md
++++ b/CLAUDE.md
+@@ -8,8 +8,8 @@ Ayrıntı ve okuma sırası: `README.md` → `docs/AI_WORKFLOW.md` → `recipes/
+ 
+ ## Seviye
+ <!-- Bu bölümü proje başında doldurun (seviye tanımları: şablon deposundaki docs/SEVIYE_TANIMLARI.md); doldurulana kadar şablon varsayılanı geçerlidir. -->
+-Seviye: S1 (N-Tier) · Risk: yok (şablon varsayılanı, henüz görüşme yapılmadı)
++Seviye: S2 (N-Tier) · Risk: yok (şablon varsayılanı, henüz görüşme yapılmadı)
+ Kapsam: <müşterinin asıl ihtiyacı>
+ İşin ihtiyaçları: e-posta bildirimi · içerik/görsel yükleme · deploy · yedek · spam koruması (her biri: var/yok/çözüm)
+-Yapmayacaklarımız: refresh token ve kullanıcı self-servisi (S2) · soft delete, RowVersion, audit kullanıcı alanları (S3) · domain event, API versiyonlama, önbellek (Onion S4-S5)
++Yapmayacaklarımız: self-servis e-posta/hesap silme, soft delete, RowVersion, audit kullanıcı alanları, rol yönetimi (S3) · domain event, API versiyonlama, önbellek (Onion S4-S5)
+ Seviye atlama: `recipes/` altındaki reçeteyle; sıfırdan yazılmaz.
+diff --git a/ProjectApp.API/Controllers/AuthController.cs b/ProjectApp.API/Controllers/AuthController.cs
+index 15cf3fb..8dd321d 100644
+--- a/ProjectApp.API/Controllers/AuthController.cs
++++ b/ProjectApp.API/Controllers/AuthController.cs
+@@ -1,16 +1,54 @@
++using ProjectApp.API.Extensions;
++using ProjectApp.Repositories.Identity;
+ using ProjectApp.Services.Features.Auth;
+ using ProjectApp.Services.Features.Auth.Dtos;
+ using Microsoft.AspNetCore.Authorization;
+ using Microsoft.AspNetCore.Mvc;
++using Microsoft.AspNetCore.RateLimiting;
+ 
+ namespace ProjectApp.API.Controllers;
+ 
++// Sıkı auth politikası yalnızca kimlik bilgisi/token alan uçlara uygulanır; /me ve logout global limittedir.
++// Kayıt (register): Registration:AllowPublic=false (varsayılan) ise yalnızca Admin kullanıcı ekler;
++// true ise herkes kayıt olur ve her zaman User rolü alır. Açık kayıtta e-posta doğrulaması ekleyin (login EmailConfirmed'a bakmaz).
+ public class AuthController(IAuthService authService) : CustomBaseController
+ {
+     [HttpPost("login")]
++    [EnableRateLimiting(RateLimiterExtensions.AuthPolicyName)]
+     public async Task<IActionResult> Login([FromBody] LoginRequest request, CancellationToken cancellationToken) =>
+         CreateActionResult(await authService.LoginAsync(request, cancellationToken));
+ 
++    [Authorize(Policy = AuthenticationExtensions.RegisterPolicyName)]
++    [HttpPost("register")]
++    [EnableRateLimiting(RateLimiterExtensions.AuthPolicyName)]
++    public async Task<IActionResult> Register([FromBody] RegisterRequest request, CancellationToken cancellationToken) =>
++        CreateActionResult(await authService.RegisterAsync(request, cancellationToken));
++
++    [HttpPost("refresh-token")]
++    [EnableRateLimiting(RateLimiterExtensions.AuthPolicyName)]
++    public async Task<IActionResult> RefreshToken([FromBody] RefreshTokenRequest request, CancellationToken cancellationToken) =>
++        CreateActionResult(await authService.RefreshTokenAsync(request, cancellationToken));
++
++    [HttpPost("revoke-token")]
++    [EnableRateLimiting(RateLimiterExtensions.AuthPolicyName)]
++    public async Task<IActionResult> RevokeToken([FromBody] RevokeRefreshTokenRequest request, CancellationToken cancellationToken) =>
++        CreateActionResult(await authService.RevokeRefreshTokenAsync(request, cancellationToken));
++
++    [Authorize]
++    [HttpPost("logout")]
++    public async Task<IActionResult> Logout(CancellationToken cancellationToken) =>
++        CreateActionResult(await authService.LogoutAsync(cancellationToken));
++
++    [HttpPost("forgot-password")]
++    [EnableRateLimiting(RateLimiterExtensions.AuthPolicyName)]
++    public async Task<IActionResult> ForgotPassword([FromBody] ForgotPasswordRequest request, CancellationToken cancellationToken) =>
++        CreateActionResult(await authService.ForgotPasswordAsync(request, cancellationToken));
++
++    [HttpPost("reset-password")]
++    [EnableRateLimiting(RateLimiterExtensions.AuthPolicyName)]
++    public async Task<IActionResult> ResetPassword([FromBody] ResetPasswordRequest request, CancellationToken cancellationToken) =>
++        CreateActionResult(await authService.ResetPasswordAsync(request, cancellationToken));
++
+     [Authorize]
+     [HttpGet("me")]
+     public async Task<IActionResult> GetCurrentUser(CancellationToken cancellationToken) =>
+diff --git a/ProjectApp.API/Controllers/UsersController.cs b/ProjectApp.API/Controllers/UsersController.cs
+index f53ecc4..5e44f0d 100644
+--- a/ProjectApp.API/Controllers/UsersController.cs
++++ b/ProjectApp.API/Controllers/UsersController.cs
+@@ -8,6 +8,14 @@ namespace ProjectApp.API.Controllers;
+ [Authorize]
+ public class UsersController(IUserService userService) : CustomBaseController
+ {
++    [HttpGet("me")]
++    public async Task<IActionResult> GetCurrentUserProfile(CancellationToken cancellationToken) =>
++        CreateActionResult(await userService.GetCurrentUserProfileAsync(cancellationToken));
++
++    [HttpPut("profile")]
++    public async Task<IActionResult> UpdateProfile([FromBody] UpdateProfileRequest request, CancellationToken cancellationToken) =>
++        CreateActionResult(await userService.UpdateProfileAsync(request, cancellationToken));
++
+     [HttpPost("change-password")]
+     public async Task<IActionResult> ChangePassword([FromBody] ChangePasswordRequest request, CancellationToken cancellationToken) =>
+         CreateActionResult(await userService.ChangePasswordAsync(request, cancellationToken));
+diff --git a/ProjectApp.API/Extensions/AuthenticationExtensions.cs b/ProjectApp.API/Extensions/AuthenticationExtensions.cs
+index c81b9b6..bd97e0d 100644
+--- a/ProjectApp.API/Extensions/AuthenticationExtensions.cs
++++ b/ProjectApp.API/Extensions/AuthenticationExtensions.cs
+@@ -6,11 +6,16 @@ using ProjectApp.Services.Identity;
+ using Microsoft.AspNetCore.Authentication.JwtBearer;
+ using Microsoft.AspNetCore.Identity;
+ using Microsoft.IdentityModel.Tokens;
++using Microsoft.AspNetCore.Authorization;
++using ProjectApp.API.Authorization;
+ 
+ namespace ProjectApp.API.Extensions;
+ 
+ public static class AuthenticationExtensions
+ {
++    /// <summary>/auth/register ucunun yetkilendirme politikası (bkz. RegistrationOptions).</summary>
++    public const string RegisterPolicyName = "Register";
++
+     public static IServiceCollection AddAuthenticationAndAuthorization(
+         this IServiceCollection services,
+         IConfiguration configuration,
+@@ -70,9 +75,9 @@ public static class AuthenticationExtensions
+             };
+ 
+             // Access token anında iptali: token içindeki security stamp veritabanındakiyle karşılaştırılır.
+-            // Refresh token olmadığı için token ömrü uzundur; şifre değişikliği stamp'i yeniler ve eski
+-            // token'lar süresi dolmadan geçersiz olur. Bedeli: kimliği doğrulanmış her istekte tek indeksli okuma
+-            // (anonim ziyaretçi istekleri etkilenmez).
++            // Logout, şifre değişikliği ve şifre sıfırlama stamp'i yeniler; eski token'lar
++            // süresi dolmadan geçersiz olur. Bedeli: kimliği doğrulanmış her istekte kullanıcı başına bir okuma
++            // (aynı istekte servisler FindByIdAsync çağırırsa EF change tracker'dan döner, ek sorgu olmaz).
+             options.Events = new JwtBearerEvents
+             {
+                 OnTokenValidated = async context =>
+@@ -95,7 +100,12 @@ public static class AuthenticationExtensions
+             };
+         });
+ 
+-        services.AddAuthorization();
++        // Kayıt politikası: Registration:AllowPublic true ise herkes, false (varsayılan) ise yalnızca Admin.
++        // Ayar IOptions ile okunur; değişiklik yeniden başlatma ister.
++        services.Configure<RegistrationOptions>(configuration.GetSection(RegistrationOptions.SectionName));
++        services.AddSingleton<IAuthorizationHandler, RegistrationAuthorizationHandler>();
++        services.AddAuthorizationBuilder()
++            .AddPolicy(RegisterPolicyName, policy => policy.AddRequirements(new RegistrationRequirement()));
+ 
+         return services;
+     }
+diff --git a/ProjectApp.API/Extensions/RateLimiterExtensions.cs b/ProjectApp.API/Extensions/RateLimiterExtensions.cs
+index 4ab7ff9..9333d36 100644
+--- a/ProjectApp.API/Extensions/RateLimiterExtensions.cs
++++ b/ProjectApp.API/Extensions/RateLimiterExtensions.cs
+@@ -2,25 +2,30 @@ using System.Globalization;
+ using System.Net;
+ using System.Security.Claims;
+ using System.Threading.RateLimiting;
++using Microsoft.AspNetCore.RateLimiting;
+ using ProjectApp.Services;
+ 
+ namespace ProjectApp.API.Extensions;
+ 
+ /// <summary>
+ /// Built-in ASP.NET Core RateLimiter (System.Threading.RateLimiting).
+-/// Global: FixedWindow (varsayılan 60 istek / 1 dakika), IP veya Kullanıcı Kimliği bazlı.
++/// - Global: FixedWindow (60 istek / 1 dakika), IP veya Kullanıcı Adı bazlı.
++/// - Auth: FixedWindow (varsayılan 15 istek / 1 dakika, RateLimiting:Auth:PermitLimit), Brute-Force koruması.
+ /// </summary>
+ public static class RateLimiterExtensions
+ {
++    public const string FixedPolicyName = "fixed";
++    public const string AuthPolicyName  = "auth-policy";
++
+     public static IServiceCollection AddRateLimiting(this IServiceCollection services, IConfiguration configuration)
+     {
++        var section = configuration.GetSection("RateLimiting:Fixed");
++        int permitLimit   = section.GetValue<int>("PermitLimit",   60);
++        int windowSeconds = section.GetValue<int>("WindowSeconds", 60);
++        int queueLimit    = section.GetValue<int>("QueueLimit",    0);
++
+         services.AddRateLimiter(options =>
+         {
+-            var section = configuration.GetSection("RateLimiting:Fixed");
+-            int permitLimit   = section.GetValue<int>("PermitLimit",   60);
+-            int windowSeconds = section.GetValue<int>("WindowSeconds", 60);
+-            int queueLimit    = section.GetValue<int>("QueueLimit",    0);
+-
+             options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+ 
+             // 429 yanıtı da ServiceResult formatında döner; pencere bilgisi varsa Retry-After eklenir.
+@@ -37,9 +42,42 @@ public static class RateLimiterExtensions
+                 await context.HttpContext.Response.WriteAsJsonAsync(body, cancellationToken);
+             };
+ 
+-            // Tüm endpoint'lere varsayılan olarak IP/Kullanıcı bazlı Global Limiter uygula
+-            options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(ctx =>
++            // [Hazır örnek] Uca özel sabit pencere politikası: [EnableRateLimiting(RateLimiterExtensions.FixedPolicyName)]
++            // Not: Global limiter tüm uçlara zaten uygulanır; bu politikayı bir uca eklerseniz istek her iki limitte de sayılır.
++            // Bu yüzden uca özel daha sıkı bir limit gerektiğinde, değerleri global limitten farklı ayarlayarak kullanın.
++            // Global limiter gibi kullanıcı/IP bazlı bölümlenir; bölümlenmemiş tek kova tüm kullanıcıların aynı havuzu
++            // paylaşmasına yol açardı.
++            options.AddPolicy(FixedPolicyName, httpContext =>
+                 RateLimitPartition.GetFixedWindowLimiter(
++                    partitionKey: GetUserOrIpPartitionKey(httpContext),
++                    factory: _ => new FixedWindowRateLimiterOptions
++                    {
++                        PermitLimit          = permitLimit,
++                        Window               = TimeSpan.FromSeconds(windowSeconds),
++                        QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
++                        QueueLimit           = queueLimit
++                    }));
++
++            // Kimlik doğrulama uç noktaları için katı Brute-Force koruma politikası
++            int authPermitLimit = configuration.GetValue<int>("RateLimiting:Auth:PermitLimit", 15);
++            options.AddPolicy(AuthPolicyName, httpContext =>
++                RateLimitPartition.GetFixedWindowLimiter(
++                    partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? "anonymous",
++                    factory: _ => new FixedWindowRateLimiterOptions
++                    {
++                        PermitLimit          = authPermitLimit,
++                        Window               = TimeSpan.FromMinutes(1),
++                        QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
++                        QueueLimit           = 0
++                    }));
++
++            // Tüm endpoint'lere varsayılan olarak IP/Kullanıcı bazlı Global Limiter uygula.
++            // auth-policy taşıyan uçlar muaftır: zaten daha sıkı IP bazlı auth limitiyle korunurlar; genel trafik
++            // aynı IP'nin login'ini 429'a düşürmesin (ortak IP'de DoS). Yol değil endpoint metadata'sı kontrol edilir.
++            options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(ctx =>
++                ctx.GetEndpoint()?.Metadata.GetMetadata<EnableRateLimitingAttribute>()?.PolicyName == AuthPolicyName
++                    ? RateLimitPartition.GetNoLimiter("auth-exempt")
++                    : RateLimitPartition.GetFixedWindowLimiter(
+                     partitionKey: GetUserOrIpPartitionKey(ctx),
+                     factory: _ => new FixedWindowRateLimiterOptions
+                     {
+diff --git a/ProjectApp.API/Infrastructure/IdentityDataSeeder.cs b/ProjectApp.API/Infrastructure/IdentityDataSeeder.cs
+index 5ed7329..ea4ba3d 100644
+--- a/ProjectApp.API/Infrastructure/IdentityDataSeeder.cs
++++ b/ProjectApp.API/Infrastructure/IdentityDataSeeder.cs
+@@ -73,6 +73,11 @@ public static class IdentityDataSeeder
+             return false;
+         }
+ 
++        // Refresh token da iptal edilir (aksi halde çalınmış bir refresh token yeni access token alabilirdi).
++        // ResetPasswordAsync kullanıcıyı kaydederken bu alanlar da aynı yazımda kaydedilir.
++        admin.RefreshToken = null;
++        admin.RefreshTokenExpiryTime = null;
++
+         var token = await userManager.GeneratePasswordResetTokenAsync(admin);
+         var result = await userManager.ResetPasswordAsync(admin, token, newPassword);
+         if (!result.Succeeded)
+@@ -83,6 +88,7 @@ public static class IdentityDataSeeder
+ 
+         await userManager.SetLockoutEndDateAsync(admin, null);
+         await userManager.ResetAccessFailedCountAsync(admin);
++
+         logger.LogWarning("Admin şifresi Seed:ResetAdminPassword ile sıfırlandı. Seed__AdminPassword ve Seed__ResetAdminPassword değişkenlerini şimdi kaldırın.");
+         return true;
+     }
+diff --git a/ProjectApp.API/ProjectApp.API.http b/ProjectApp.API/ProjectApp.API.http
+index 85e7a06..069e692 100644
+--- a/ProjectApp.API/ProjectApp.API.http
++++ b/ProjectApp.API/ProjectApp.API.http
+@@ -24,10 +24,46 @@ Content-Type: application/json
+ ###
+ @adminToken = {{adminLogin.response.body.$.data.accessToken}}
+ 
++### Yeni kullanıcı kaydı (User rolü atanır)
++# Registration:AllowPublic=false (varsayılan) ise yalnızca Admin: token yoksa 401, User rolüyle 403. true ise token gerekmez.
++POST {{baseUrl}}/auth/register
++Authorization: Bearer {{adminToken}}
++Content-Type: application/json
++
++{
++  "fullName": "Deneme Kullanıcı",
++  "userName": "deneme1",
++  "email": "deneme1@example.com",
++  "password": "Deneme12*"
++}
++
++### Kullanıcı login
++# @name userLogin
++POST {{baseUrl}}/auth/login
++Content-Type: application/json
++
++{
++  "email": "deneme1@example.com",
++  "password": "Deneme12*"
++}
++
++### Token yenileme (refresh token rotasyonu)
++POST {{baseUrl}}/auth/refresh-token
++Content-Type: application/json
++
++{
++  "accessToken": "{{userLogin.response.body.$.data.accessToken}}",
++  "refreshToken": "{{userLogin.response.body.$.data.refreshToken}}"
++}
++
+ ### Oturum açmış kullanıcı (auth/me)
+ GET {{baseUrl}}/auth/me
+ Authorization: Bearer {{adminToken}}
+ 
++### Profil (users/me)
++GET {{baseUrl}}/users/me
++Authorization: Bearer {{adminToken}}
++
+ ### Kategori oluştur (yalnızca Admin)
+ # @name createCategory
+ POST {{baseUrl}}/categories
+@@ -93,3 +129,6 @@ GET {{baseUrl}}/products/paged?pageNumber=1&pageSize=10
+ ### Kategori ve ürünleri
+ GET {{baseUrl}}/categories/{{categoryId}}/products
+ 
++### Çıkış (refresh token ve access token geçersiz olur)
++POST {{baseUrl}}/auth/logout
++Authorization: Bearer {{adminToken}}
+diff --git a/ProjectApp.API/appsettings.Production.json b/ProjectApp.API/appsettings.Production.json
+index c59e276..ee35fe6 100644
+--- a/ProjectApp.API/appsettings.Production.json
++++ b/ProjectApp.API/appsettings.Production.json
+@@ -21,7 +21,8 @@
+     "Issuer": "ProjectApp",
+     "Audience": "ProjectAppUsers",
+     "SigningKey": "",
+-    "AccessTokenMinutes": 120
++    "AccessTokenMinutes": 15,
++    "RefreshTokenDays": 7
+   },
+   "Cors": {
+     "_comment": "Boş bırakıldı: ortam değişkeni Cors__AllowedOrigins__0=https://app.alanadiniz.com verilmezse uygulama açılır ama hiçbir kaynağa izin verilmez (açılışta uyarı loglanır).",
+@@ -38,6 +39,9 @@
+       "PermitLimit": 100,
+       "WindowSeconds": 60,
+       "QueueLimit": 0
++    },
++    "Auth": {
++      "PermitLimit": 15
+     }
+   }
+ }
+diff --git a/ProjectApp.API/appsettings.json b/ProjectApp.API/appsettings.json
+index 90b4c6f..4227e7a 100644
+--- a/ProjectApp.API/appsettings.json
++++ b/ProjectApp.API/appsettings.json
+@@ -18,8 +18,11 @@
+     "Issuer": "ProjectApp",
+     "Audience": "ProjectAppUsers",
+     "SigningKey": "",
+-    "_AccessTokenMinutes_comment": "Az admin, refresh token yok: 120 dakika. Şifre değişince security stamp eski token'ları anında iptal eder.",
+-    "AccessTokenMinutes": 120
++    "AccessTokenMinutes": 30,
++    "RefreshTokenDays": 7
++  },
++  "Registration": {
++    "AllowPublic": false
+   },
+   "Cors": {
+     "AllowedOrigins": []
+@@ -34,6 +37,9 @@
+       "PermitLimit": 60,
+       "WindowSeconds": 60,
+       "QueueLimit": 0
++    },
++    "Auth": {
++      "PermitLimit": 15
+     }
+   }
+ }
+diff --git a/ProjectApp.Repositories/Identity/AppUser.cs b/ProjectApp.Repositories/Identity/AppUser.cs
+index 8ac9ebf..f7bba9c 100644
+--- a/ProjectApp.Repositories/Identity/AppUser.cs
++++ b/ProjectApp.Repositories/Identity/AppUser.cs
+@@ -5,4 +5,8 @@ namespace ProjectApp.Repositories.Identity;
+ public class AppUser : IdentityUser<Guid>
+ {
+     public string? FullName { get; set; }
++
++    public string? RefreshToken { get; set; }
++
++    public DateTime? RefreshTokenExpiryTime { get; set; }
+ }
+diff --git a/ProjectApp.Repositories/Identity/AppUserConfiguration.cs b/ProjectApp.Repositories/Identity/AppUserConfiguration.cs
+index 9fa566f..e94f184 100644
+--- a/ProjectApp.Repositories/Identity/AppUserConfiguration.cs
++++ b/ProjectApp.Repositories/Identity/AppUserConfiguration.cs
+@@ -8,5 +8,7 @@ public class AppUserConfiguration : IEntityTypeConfiguration<AppUser>
+     public void Configure(EntityTypeBuilder<AppUser> builder)
+     {
+         builder.Property(x => x.FullName).HasMaxLength(150);
++        builder.Property(x => x.RefreshToken).HasMaxLength(64);
++        builder.HasIndex(x => x.RefreshToken);
+     }
+ }
+diff --git a/ProjectApp.Services/Features/Auth/AuthService.cs b/ProjectApp.Services/Features/Auth/AuthService.cs
+index c512d45..4ee07f1 100644
+--- a/ProjectApp.Services/Features/Auth/AuthService.cs
++++ b/ProjectApp.Services/Features/Auth/AuthService.cs
+@@ -1,9 +1,14 @@
+ using System.Net;
++using System.Security.Claims;
++using System.Security.Cryptography;
++using System.Text;
+ using ProjectApp.Repositories;
+ using ProjectApp.Repositories.Identity;
++using ProjectApp.Services.Common.Email;
+ using ProjectApp.Services.Features.Auth.Dtos;
+ using ProjectApp.Services.Identity;
+ using Microsoft.AspNetCore.Identity;
++using Microsoft.EntityFrameworkCore;
+ using Microsoft.Extensions.Logging;
+ 
+ namespace ProjectApp.Services.Features.Auth;
+@@ -12,7 +17,9 @@ public class AuthService(
+     UserManager<AppUser> userManager,
+     ITokenService tokenService,
+     ICurrentUserService currentUserService,
+-    ILogger<AuthService> logger) : IAuthService
++    IEmailService emailService,
++    ILogger<AuthService> logger,
++    TimeProvider timeProvider) : IAuthService
+ {
+     public async Task<ServiceResult<TokenResponse>> LoginAsync(LoginRequest request, CancellationToken cancellationToken = default)
+     {
+@@ -48,15 +55,212 @@ public class AuthService(
+         logger.LogInformation("Başarılı giriş. Kullanıcı: {UserId}", user.Id);
+ 
+         var roles = await userManager.GetRolesAsync(user);
+-        var (accessToken, accessTokenExpiry) = tokenService.CreateAccessToken(user, roles);
++        var (accessToken, accessTokenExpiry, refreshToken, refreshTokenExpiry) =
++            tokenService.CreateTokens(user, roles);
++
++        var sessionUpdate = await userManager.StoreRefreshTokenAsync(user, refreshToken, refreshTokenExpiry);
++        if (!sessionUpdate.Succeeded)
++        {
++            return ServiceResult<TokenResponse>.Fail(UserSessionExtensions.SessionUpdateFailedMessage, HttpStatusCode.Conflict);
++        }
+ 
+         var response = new TokenResponse(
+             accessToken,
+-            accessTokenExpiry);
++            accessTokenExpiry,
++            refreshToken,
++            refreshTokenExpiry);
++
++        return ServiceResult<TokenResponse>.Success(response);
++    }
++
++    public async Task<ServiceResult<RegisterResponse>> RegisterAsync(RegisterRequest request, CancellationToken cancellationToken = default)
++    {
++        var existingEmail = await userManager.FindByEmailAsync(request.Email);
++        if (existingEmail is not null)
++        {
++            return ServiceResult<RegisterResponse>.Fail("Bu e-posta adresi zaten kayıtlıdır.");
++        }
++
++        var existingUserName = await userManager.FindByNameAsync(request.UserName);
++        if (existingUserName is not null)
++        {
++            return ServiceResult<RegisterResponse>.Fail("Bu kullanıcı adı zaten kullanılmaktadır.");
++        }
++
++        var user = new AppUser
++        {
++            Id = Guid.CreateVersion7(),
++            FullName = request.FullName,
++            UserName = request.UserName,
++            Email = request.Email
++        };
++
++        var result = await userManager.CreateAsync(user, request.Password);
++        if (!result.Succeeded)
++        {
++            var errors = result.Errors.Select(x => x.Description).ToList();
++            return ServiceResult<RegisterResponse>.Fail(errors);
++        }
++
++        // Rol yoksa Identity hata sonucu yerine exception fırlatır; her iki durumda da
++        // rolsüz kullanıcı bırakılmaz, kayıt geri alınır.
++        IdentityResult roleResult;
++        try
++        {
++            roleResult = await userManager.AddToRoleAsync(user, RoleNames.User);
++        }
++        catch (InvalidOperationException ex)
++        {
++            logger.LogError(ex, "Kullanıcıya varsayılan rol atanamadı (rol tanımlı değil).");
++            roleResult = IdentityResult.Failed(new IdentityError { Description = ex.Message });
++        }
++
++        if (!roleResult.Succeeded)
++        {
++            logger.LogError("Kullanıcıya varsayılan rol atanamadı: {Errors}", string.Join(", ", roleResult.Errors.Select(e => e.Description)));
++            await userManager.DeleteAsync(user);
++            return ServiceResult<RegisterResponse>.Fail("Kayıt tamamlanamadı, lütfen tekrar deneyin.", HttpStatusCode.InternalServerError);
++        }
++
++        return ServiceResult<RegisterResponse>.SuccessAsCreated(new RegisterResponse(user.Id), "/api/auth/me");
++    }
++
++    public async Task<ServiceResult<TokenResponse>> RefreshTokenAsync(RefreshTokenRequest request, CancellationToken cancellationToken = default)
++    {
++        var principal = tokenService.GetPrincipalFromExpiredToken(request.AccessToken);
++        if (principal is null)
++        {
++            return ServiceResult<TokenResponse>.Fail("Geçersiz access token.", HttpStatusCode.Unauthorized);
++        }
++
++        var userIdString = principal.FindFirstValue(ClaimTypes.NameIdentifier);
++        if (!Guid.TryParse(userIdString, out var userId))
++        {
++            return ServiceResult<TokenResponse>.Fail("Geçersiz kullanıcı kimliği.", HttpStatusCode.Unauthorized);
++        }
++
++        var user = await userManager.FindByIdAsync(userId.ToString());
++        if (user is null ||
++            !CryptographicOperations.FixedTimeEquals(
++                Encoding.UTF8.GetBytes(user.RefreshToken ?? string.Empty),
++                Encoding.UTF8.GetBytes(TokenService.HashToken(request.RefreshToken))) ||
++            user.RefreshTokenExpiryTime <= timeProvider.GetUtcNow().UtcDateTime)
++        {
++            return ServiceResult<TokenResponse>.Fail("Geçersiz veya süresi dolmuş refresh token.", HttpStatusCode.Unauthorized);
++        }
++
++        // Token rotasyonu
++        var roles = await userManager.GetRolesAsync(user);
++        var (newAccessToken, newAccessTokenExpiry, newRefreshToken, newRefreshTokenExpiry) =
++            tokenService.CreateTokens(user, roles);
++
++        var sessionUpdate = await userManager.StoreRefreshTokenAsync(user, newRefreshToken, newRefreshTokenExpiry);
++        if (!sessionUpdate.Succeeded)
++        {
++            return ServiceResult<TokenResponse>.Fail(UserSessionExtensions.SessionUpdateFailedMessage, HttpStatusCode.Conflict);
++        }
++
++        var response = new TokenResponse(
++            newAccessToken,
++            newAccessTokenExpiry,
++            newRefreshToken,
++            newRefreshTokenExpiry);
+ 
+         return ServiceResult<TokenResponse>.Success(response);
+     }
+ 
++    public async Task<ServiceResult> RevokeRefreshTokenAsync(RevokeRefreshTokenRequest request, CancellationToken cancellationToken = default)
++    {
++        if (string.IsNullOrWhiteSpace(request.RefreshToken))
++        {
++            return ServiceResult.Fail("Refresh token belirtilmelidir.", HttpStatusCode.BadRequest);
++        }
++
++        var hashedRefreshToken = TokenService.HashToken(request.RefreshToken);
++        var user = await userManager.Users
++            .FirstOrDefaultAsync(u => u.RefreshToken == hashedRefreshToken, cancellationToken);
++
++        if (user is null)
++        {
++            return ServiceResult.Fail("Belirtilen refresh token bulunamadı.", HttpStatusCode.NotFound);
++        }
++
++        var sessionUpdate = await userManager.ClearSessionAsync(user, rotateSecurityStamp: false);
++        if (!sessionUpdate.Succeeded)
++        {
++            return UserSessionExtensions.SessionUpdateFailed();
++        }
++
++        return ServiceResult.Success(HttpStatusCode.NoContent);
++    }
++
++    public async Task<ServiceResult> LogoutAsync(CancellationToken cancellationToken = default)
++    {
++        if (!currentUserService.IsAuthenticated || currentUserService.UserId is null)
++        {
++            return ServiceResult.Fail("Oturum açmış kullanıcı bulunamadı.", HttpStatusCode.Unauthorized);
++        }
++
++        var user = await userManager.FindByIdAsync(currentUserService.UserId.Value.ToString());
++        if (user is null)
++        {
++            return ServiceResult.Fail("Kullanıcı bulunamadı.", HttpStatusCode.NotFound);
++        }
++
++        var sessionUpdate = await userManager.ClearSessionAsync(user, rotateSecurityStamp: true);
++        if (!sessionUpdate.Succeeded)
++        {
++            return UserSessionExtensions.SessionUpdateFailed();
++        }
++
++        return ServiceResult.Success(HttpStatusCode.NoContent);
++    }
++
++    public async Task<ServiceResult> ForgotPasswordAsync(ForgotPasswordRequest request, CancellationToken cancellationToken = default)
++    {
++        var user = await userManager.FindByEmailAsync(request.Email);
++        if (user is not null)
++        {
++            var resetToken = await userManager.GeneratePasswordResetTokenAsync(user);
++            logger.LogInformation(
++                "Şifre sıfırlama talebi oluşturuldu. Kullanıcı: {UserId}",
++                user.Id);
++
++            await emailService.SendEmailAsync(
++                user.Email!,
++                "Şifre Sıfırlama Talebi",
++                $"Şifrenizi sıfırlamak için aşağıdaki anahtarı (Token) kullanabilirsiniz: {resetToken}",
++                cancellationToken);
++        }
++
++        // Enumeration saldırılarını önlemek için her durumda başarılı döner
++        return ServiceResult.Success(HttpStatusCode.NoContent);
++    }
++
++    public async Task<ServiceResult> ResetPasswordAsync(ResetPasswordRequest request, CancellationToken cancellationToken = default)
++    {
++        var user = await userManager.FindByEmailAsync(request.Email);
++        if (user is null)
++        {
++            return ServiceResult.Fail("Şifre sıfırlama işlemi başarısız oldu. Bilgilerinizi kontrol ediniz.", HttpStatusCode.BadRequest);
++        }
++
++        var result = await userManager.ResetPasswordAsync(user, request.Token, request.NewPassword);
++        if (!result.Succeeded)
++        {
++            var errors = result.Errors.Select(x => x.Description).ToList();
++            return ServiceResult.Fail(errors, HttpStatusCode.BadRequest);
++        }
++
++        var sessionUpdate = await userManager.ClearSessionAsync(user, rotateSecurityStamp: true);
++        if (!sessionUpdate.Succeeded)
++        {
++            return UserSessionExtensions.SessionUpdateFailed();
++        }
++
++        return ServiceResult.Success(HttpStatusCode.NoContent);
++    }
++
+     public async Task<ServiceResult<CurrentUserResponse>> GetCurrentUserAsync(CancellationToken cancellationToken = default)
+     {
+         if (!currentUserService.IsAuthenticated || currentUserService.UserId is null)
+diff --git a/ProjectApp.Services/Features/Auth/Dtos/TokenResponse.cs b/ProjectApp.Services/Features/Auth/Dtos/TokenResponse.cs
+index e281411..dc836b4 100644
+--- a/ProjectApp.Services/Features/Auth/Dtos/TokenResponse.cs
++++ b/ProjectApp.Services/Features/Auth/Dtos/TokenResponse.cs
+@@ -2,4 +2,6 @@
+ 
+ public record TokenResponse(
+     string AccessToken,
+-    DateTime AccessTokenExpiresAt);
++    DateTime AccessTokenExpiresAt,
++    string RefreshToken,
++    DateTime RefreshTokenExpiresAt);
+diff --git a/ProjectApp.Services/Features/Auth/IAuthService.cs b/ProjectApp.Services/Features/Auth/IAuthService.cs
+index 84e0c5e..9bed823 100644
+--- a/ProjectApp.Services/Features/Auth/IAuthService.cs
++++ b/ProjectApp.Services/Features/Auth/IAuthService.cs
+@@ -5,5 +5,11 @@ namespace ProjectApp.Services.Features.Auth;
+ public interface IAuthService
+ {
+     Task<ServiceResult<TokenResponse>> LoginAsync(LoginRequest request, CancellationToken cancellationToken = default);
++    Task<ServiceResult<RegisterResponse>> RegisterAsync(RegisterRequest request, CancellationToken cancellationToken = default);
++    Task<ServiceResult<TokenResponse>> RefreshTokenAsync(RefreshTokenRequest request, CancellationToken cancellationToken = default);
++    Task<ServiceResult> RevokeRefreshTokenAsync(RevokeRefreshTokenRequest request, CancellationToken cancellationToken = default);
++    Task<ServiceResult> LogoutAsync(CancellationToken cancellationToken = default);
++    Task<ServiceResult> ForgotPasswordAsync(ForgotPasswordRequest request, CancellationToken cancellationToken = default);
++    Task<ServiceResult> ResetPasswordAsync(ResetPasswordRequest request, CancellationToken cancellationToken = default);
+     Task<ServiceResult<CurrentUserResponse>> GetCurrentUserAsync(CancellationToken cancellationToken = default);
+ }
+diff --git a/ProjectApp.Services/Features/Users/IUserService.cs b/ProjectApp.Services/Features/Users/IUserService.cs
+index dd1ca6c..708e2c7 100644
+--- a/ProjectApp.Services/Features/Users/IUserService.cs
++++ b/ProjectApp.Services/Features/Users/IUserService.cs
+@@ -4,5 +4,7 @@ namespace ProjectApp.Services.Features.Users;
+ 
+ public interface IUserService
+ {
++    Task<ServiceResult<UserProfileDto>> GetCurrentUserProfileAsync(CancellationToken cancellationToken = default);
++    Task<ServiceResult> UpdateProfileAsync(UpdateProfileRequest request, CancellationToken cancellationToken = default);
+     Task<ServiceResult> ChangePasswordAsync(ChangePasswordRequest request, CancellationToken cancellationToken = default);
+ }
+diff --git a/ProjectApp.Services/Features/Users/UserService.cs b/ProjectApp.Services/Features/Users/UserService.cs
+index 5b0eee5..c4e8254 100644
+--- a/ProjectApp.Services/Features/Users/UserService.cs
++++ b/ProjectApp.Services/Features/Users/UserService.cs
+@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Identity;
+ using ProjectApp.Repositories;
+ using ProjectApp.Repositories.Identity;
+ using ProjectApp.Services.Features.Users.Dtos;
++using ProjectApp.Services.Identity;
+ 
+ namespace ProjectApp.Services.Features.Users;
+ 
+@@ -13,6 +14,67 @@ public class UserService(
+     private const string AccountLockedMessage =
+         "Çok fazla hatalı deneme yapıldı, hesabınız geçici olarak kilitlendi. Lütfen daha sonra tekrar deneyin.";
+ 
++    public async Task<ServiceResult<UserProfileDto>> GetCurrentUserProfileAsync(CancellationToken cancellationToken = default)
++    {
++        var userResult = await GetAuthenticatedUserAsync();
++        if (userResult.IsFail)
++        {
++            return ServiceResult<UserProfileDto>.Fail(userResult.ErrorMessage!, userResult.Status);
++        }
++
++        var user = userResult.Data!;
++        var roles = await userManager.GetRolesAsync(user);
++
++        var profileDto = new UserProfileDto(
++            user.Id,
++            user.FullName ?? string.Empty,
++            user.UserName,
++            user.Email,
++            user.PhoneNumber,
++            roles.ToList());
++
++        return ServiceResult<UserProfileDto>.Success(profileDto);
++    }
++
++    public async Task<ServiceResult> UpdateProfileAsync(UpdateProfileRequest request, CancellationToken cancellationToken = default)
++    {
++        var userResult = await GetAuthenticatedUserAsync();
++        if (userResult.IsFail)
++        {
++            return ServiceResult.Fail(userResult.ErrorMessage!, userResult.Status);
++        }
++
++        var user = userResult.Data!;
++
++        if (!string.Equals(user.UserName, request.UserName, StringComparison.OrdinalIgnoreCase))
++        {
++            var existingUser = await userManager.FindByNameAsync(request.UserName);
++            if (existingUser is not null && existingUser.Id != user.Id)
++            {
++                return ServiceResult.Fail("Bu kullanıcı adı başka bir kullanıcı tarafından kullanılmaktadır.", HttpStatusCode.BadRequest);
++            }
++
++            var setUserNameResult = await userManager.SetUserNameAsync(user, request.UserName);
++            if (!setUserNameResult.Succeeded)
++            {
++                var errors = setUserNameResult.Errors.Select(e => e.Description).ToList();
++                return ServiceResult.Fail(errors, HttpStatusCode.BadRequest);
++            }
++        }
++
++        user.FullName = request.FullName;
++        user.PhoneNumber = request.PhoneNumber;
++
++        var updateResult = await userManager.UpdateAsync(user);
++        if (!updateResult.Succeeded)
++        {
++            var errors = updateResult.Errors.Select(e => e.Description).ToList();
++            return ServiceResult.Fail(errors, HttpStatusCode.BadRequest);
++        }
++
++        return ServiceResult.Success(HttpStatusCode.NoContent);
++    }
++
+     public async Task<ServiceResult> ChangePasswordAsync(ChangePasswordRequest request, CancellationToken cancellationToken = default)
+     {
+         var userResult = await GetAuthenticatedUserAsync();
+@@ -36,6 +98,12 @@ public class UserService(
+             return ServiceResult.Fail(errors, HttpStatusCode.BadRequest);
+         }
+ 
++        var sessionUpdate = await userManager.ClearSessionAsync(user, rotateSecurityStamp: true);
++        if (!sessionUpdate.Succeeded)
++        {
++            return UserSessionExtensions.SessionUpdateFailed();
++        }
++
+         return ServiceResult.Success(HttpStatusCode.NoContent);
+     }
+ 
+diff --git a/ProjectApp.Services/Identity/ITokenService.cs b/ProjectApp.Services/Identity/ITokenService.cs
+index 9e0cda7..2bbd5b5 100644
+--- a/ProjectApp.Services/Identity/ITokenService.cs
++++ b/ProjectApp.Services/Identity/ITokenService.cs
+@@ -1,10 +1,13 @@
+-﻿using ProjectApp.Repositories.Identity;
++﻿using System.Security.Claims;
++using ProjectApp.Repositories.Identity;
+ 
+ namespace ProjectApp.Services.Identity;
+ 
+ public interface ITokenService
+ {
+-    (string AccessToken, DateTime AccessTokenExpiry) CreateAccessToken(
++    (string AccessToken, DateTime AccessTokenExpiry, string RefreshToken, DateTime RefreshTokenExpiry) CreateTokens(
+         AppUser user,
+         IEnumerable<string> roles);
++
++    ClaimsPrincipal? GetPrincipalFromExpiredToken(string token);
+ }
+diff --git a/ProjectApp.Services/Identity/JwtOptions.cs b/ProjectApp.Services/Identity/JwtOptions.cs
+index e9502a2..41ee323 100644
+--- a/ProjectApp.Services/Identity/JwtOptions.cs
++++ b/ProjectApp.Services/Identity/JwtOptions.cs
+@@ -9,8 +9,8 @@ public class JwtOptions : IValidatableObject
+     public string Issuer { get; set; } = string.Empty;
+     public string Audience { get; set; } = string.Empty;
+     public string SigningKey { get; set; } = string.Empty;
+-    // S1'de refresh token yoktur; varsayılan 120 dakika (çalınan token'ın açık kalacağı süreyi sınırlar).
+-    public int AccessTokenMinutes { get; set; } = 120;
++    public int AccessTokenMinutes { get; set; } = 30;
++    public int RefreshTokenDays { get; set; } = 7;
+ 
+     public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
+     {
+@@ -37,5 +37,10 @@ public class JwtOptions : IValidatableObject
+         {
+             yield return new ValidationResult("Jwt:AccessTokenMinutes 0'dan büyük olmalıdır.", [nameof(AccessTokenMinutes)]);
+         }
++
++        if (RefreshTokenDays <= 0)
++        {
++            yield return new ValidationResult("Jwt:RefreshTokenDays 0'dan büyük olmalıdır.", [nameof(RefreshTokenDays)]);
++        }
+     }
+ }
+diff --git a/ProjectApp.Services/Identity/TokenService.cs b/ProjectApp.Services/Identity/TokenService.cs
+index 874af07..4c372fe 100644
+--- a/ProjectApp.Services/Identity/TokenService.cs
++++ b/ProjectApp.Services/Identity/TokenService.cs
+@@ -1,5 +1,6 @@
+ using System.IdentityModel.Tokens.Jwt;
+ using System.Security.Claims;
++using System.Security.Cryptography;
+ using System.Text;
+ using ProjectApp.Repositories.Identity;
+ using Microsoft.Extensions.Options;
+@@ -16,12 +17,19 @@ public class TokenService(IOptions<JwtOptions> jwtOptions, TimeProvider timeProv
+     /// </summary>
+     public const string SecurityStampClaimType = "security_stamp";
+ 
+-    public (string AccessToken, DateTime AccessTokenExpiry) CreateAccessToken(
++    /// <summary>
++    /// Refresh token veritabanında düz metin saklanmaz; SHA-256 özeti saklanır (istemciye ham token döner).
++    /// </summary>
++    public static string HashToken(string token) =>
++        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(token)));
++
++    public (string AccessToken, DateTime AccessTokenExpiry, string RefreshToken, DateTime RefreshTokenExpiry) CreateTokens(
+         AppUser user,
+         IEnumerable<string> roles)
+     {
+         var now = timeProvider.GetUtcNow().UtcDateTime;
+         var accessTokenExpiry = now.AddMinutes(_options.AccessTokenMinutes);
++        var refreshTokenExpiry = now.AddDays(_options.RefreshTokenDays);
+ 
+         var claims = new List<Claim>
+         {
+@@ -55,6 +63,44 @@ public class TokenService(IOptions<JwtOptions> jwtOptions, TimeProvider timeProv
+ 
+         var accessToken = new JwtSecurityTokenHandler().WriteToken(tokenDescriptor);
+ 
+-        return (accessToken, accessTokenExpiry);
++        var randomBytes = new byte[64];
++        using var rng = RandomNumberGenerator.Create();
++        rng.GetBytes(randomBytes);
++        var refreshToken = Convert.ToBase64String(randomBytes);
++
++        return (accessToken, accessTokenExpiry, refreshToken, refreshTokenExpiry);
++    }
++
++    public ClaimsPrincipal? GetPrincipalFromExpiredToken(string token)
++    {
++        var tokenValidationParameters = new TokenValidationParameters
++        {
++            ValidateAudience = true,
++            ValidateIssuer = true,
++            ValidateIssuerSigningKey = true,
++            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_options.SigningKey)),
++            ValidIssuer = _options.Issuer,
++            ValidAudience = _options.Audience,
++            ValidateLifetime = false // Token süresi geçmiş olsa bile claim'leri okuyabilmek için
++        };
++
++        var tokenHandler = new JwtSecurityTokenHandler();
++        try
++        {
++            var principal = tokenHandler.ValidateToken(token, tokenValidationParameters, out var securityToken);
++
++            if (securityToken is not JwtSecurityToken jwtSecurityToken ||
++                !jwtSecurityToken.Header.Alg.Equals(SecurityAlgorithms.HmacSha256, StringComparison.OrdinalIgnoreCase))
++            {
++                return null;
++            }
++
++            return principal;
++        }
++        catch (Exception ex) when (ex is SecurityTokenException or ArgumentException)
++        {
++            // Bozuk / başka anahtarla imzalanmış token: 500 yerine servis 401 döner.
++            return null;
++        }
+     }
+ }
+diff --git a/README.md b/README.md
+index 105e49d..358b331 100644
+--- a/README.md
++++ b/README.md
+@@ -2,7 +2,7 @@
+ 
+ > [!NOTE]
+ > ### 🏷️ Seviye
+-> Bu şablon **S1 (Vitrin)** seviyesindedir: tek/az admin, anonim ziyaretçi, örnek katalog modülü. Kullanıcı oturumları (S2) ve denetim/soft delete/eşzamanlılık (S3) [`recipes/`](recipes/README.md) klasöründeki reçetelerle eklenir. Kodda olmayan bir özelliği 'en iyi uygulama' diye ekleme; önce seviyeyi ve reçeteyi kontrol et. Ayrıntılar: [`recipes/README.md`](recipes/README.md).
++> Bu proje **S2 (Küçük ekip)** seviyesindedir: kullanıcı oturumları, refresh token rotasyonu, şifre sıfırlama, profil yönetimi ve sıkı kimlik rate limit'i aktiftir. Denetim alanları, soft delete, RowVersion/409 ve rol yönetimi (S3) [`recipes/`](recipes/README.md) klasöründeki reçeteyle eklenir. Kodda olmayan bir özelliği 'en iyi uygulama' diye ekleme; önce seviyeyi ve reçeteyi kontrol et. Ayrıntılar: [`recipes/README.md`](recipes/README.md).
+ 
+ Bu belge, **ProjectApp** çözümünde çalışan **Kıdemli Yazılımcılar (Senior Developers)** ve **Yapay Zeka Kodlama Ajanları (AI Coding Agents — Antigravity, Claude Code, Cursor, Roo Code, GitHub Copilot, Windsurf vb.)** için hazırlanmış **resmi mimari anayasa ve geliştirme rehberidir**. Projede yapılacak her türlü yeni geliştirme, hata düzeltme ve refactoring işlemi bu belgedeki kurallara **%100 sadık kalmak zorundadır**.
+ 
+@@ -11,7 +11,7 @@ Bu belge, **ProjectApp** çözümünde çalışan **Kıdemli Yazılımcılar (Se
+ > Projede herhangi bir işlem yapmadan önce aşağıdaki ana dokümanları **bu sırayla** okuyun:
+ > 1. **Mimari Anayasa (Şu anki belge):** [`README.md`](./README.md) — Katman kuralları, yasaklı paketler, `Feature-Service` & `ServiceResult<T>` standartları ve yeni özellik ekleme adımları.
+ > 2. **AI Geliştirme İş Akışı:** [`docs/AI_WORKFLOW.md`](./docs/AI_WORKFLOW.md) — Kod inceleme (Code Review), mantık hatası analizi, plan modu, doğrulama ve Türkçe commit disiplini.
+-> 3. **Reçeteler:** [`recipes/README.md`](./recipes/README.md) — Seviye atlama (S1→S2, S2→S3) ve opsiyonel kalıp yönergeleri.
++> 3. **Reçeteler:** [`recipes/README.md`](./recipes/README.md) — Seviye atlama (S2→S3) ve opsiyonel kalıp yönergeleri.
+ >
+ > SYSTEM_AUDIT ve wiki (docs/wiki) S3 reçetesiyle gelir.
+ 
+@@ -81,8 +81,8 @@ ProjectApp.slnx
+ ├── ProjectApp.API/                          # [Sunum Katmanı - Startup Project]
+ │   ├── Controllers/
+ │   │   ├── CustomBaseController.cs          # ServiceResult -> IActionResult dönüşüm merkezi
+-│   │   ├── AuthController.cs                # /api/auth/* (Login, Me)
+-│   │   ├── UsersController.cs               # /api/users/* (ChangePassword)
++│   │   ├── AuthController.cs                # /api/auth/* (Login, Register, RefreshToken, RevokeToken, Logout, Forgot/ResetPassword, Me)
++│   │   ├── UsersController.cs               # /api/users/* (Me, Profile, ChangePassword)
+ │   │   ├── ProductsController.cs            # /api/products/* (GetAll, GetPaged, GetById, Create, Update, Delete)
+ │   │   └── CategoriesController.cs          # /api/categories/* (GetAll, GetById, Products, Create, Update, Delete)
+ │   ├── ExceptionHandlers/
+@@ -96,7 +96,7 @@ ProjectApp.slnx
+ │   │   ├── ForwardedHeadersExtensions.cs    # X-Forwarded-* (KnownProxies / KnownNetworks / NoProxy) kontrolü
+ │   │   ├── HealthCheckExtensions.cs         # /health (liveness) ve /health/ready (SQL kontrolü)
+ │   │   ├── OpenApiExtensions.cs             # OpenAPI v1 şeması + Scalar UI (/scalar/v1) + JWT Bearer şeması
+-│   │   ├── RateLimiterExtensions.cs         # Tek global FixedWindow (NameIdentifier/IP) limiter
++│   │   ├── RateLimiterExtensions.cs         # Global FixedWindow (NameIdentifier/IP) + kimlik uçlarına auth-policy limiter
+ │   │   ├── SecurityHeadersExtensions.cs     # nosniff, X-Frame-Options, Referrer-Policy, Permissions-Policy, CSP
+ │   │   └── SerilogExtensions.cs             # Serilog yapılandırması (Console + günlük dönen dosya)
+ │   ├── Filters/
+@@ -122,13 +122,15 @@ ProjectApp.slnx
+ │   ├── Extensions/
+ │   │   └── ServiceExtensions.cs             # Mapster, FluentValidation, Options, e-posta ve Feature-Service DI kayıtları
+ │   ├── Features/
+-│   │   ├── Auth/                            # IAuthService, AuthService, LoginRequest, TokenResponse, CurrentUserResponse
+-│   │   ├── Users/                           # IUserService, UserService, ChangePasswordRequest
++│   │   ├── Auth/                            # IAuthService, AuthService, Login, Register, RefreshToken, Logout, Forgot/ResetPassword
++│   │   ├── Users/                           # IUserService, UserService, Me, Profile, ChangePassword
+ │   │   ├── Categories/                      # ICategoryService, CategoryService, Create/Update/Dto/Mapping/Validators
+ │   │   └── Products/                        # IProductService, ProductService, Create/Update/ProductDto/Mapping/Validators
+ │   ├── Identity/
+-│   │   ├── ITokenService.cs & TokenService.cs # AccessToken (JWT + security_stamp) üretimi
+-│   │   └── JwtOptions.cs                    # Options pattern (DataAnnotations doğrulamalı)
++│   │   ├── ITokenService.cs & TokenService.cs # AccessToken (JWT + security_stamp) ve RefreshToken rotasyonu
++│   │   ├── JwtOptions.cs                    # Options pattern (AccessTokenMinutes, RefreshTokenDays DataAnnotations doğrulamalı)
++│   │   ├── RegistrationOptions.cs           # Registration:AllowPublic yapılandırması
++│   │   └── UserSessionExtensions.cs         # RefreshToken saklama ve oturum temizleme yardımcıları
+ │   └── ServiceResult.cs                     # ServiceResult ve ServiceResult<T> sarmalayıcı sınıfları
+ │
+ ├── ProjectApp.Repositories/                 # [Veri Erişim Katmanı - Data Access Layer]
+@@ -140,7 +142,7 @@ ProjectApp.slnx
+ │   ├── Categories/                          # Category, CategoryConfiguration (unique index)
+ │   ├── Products/                            # Product, ProductConfiguration (unique index)
+ │   ├── Identity/
+-│   │   ├── AppUser.cs                       # IdentityUser<Guid>
++│   │   ├── AppUser.cs                       # IdentityUser<Guid> (RefreshToken, RefreshTokenExpiryTime)
+ │   │   ├── AppRole.cs                       # IdentityRole<Guid>
+ │   │   ├── RoleNames.cs                     # Admin / User sabitleri
+ │   │   ├── AppRoleConfiguration.cs          # Admin/User rolleri HasData ile migration'a gömülü
+@@ -173,32 +175,45 @@ flowchart TD
+ 
+ ## 3. 🛡️ Güvenlik Mimarisi ve Sıkılaştırma Kuralları (Security & Hardening Standards)
+ 
+-### 3.1. JWT & Güvenlik Damgası (Security Stamp) ile Anında İptal
++### 3.1. JWT & Kriptografik Refresh Token Rotasyonu
+ - **Zero ClockSkew:** `AuthenticationExtensions.cs` içinde `ClockSkew = TimeSpan.Zero` olarak ayarlanmıştır; süresi dolan Access Token saniyesinde geçersiz olur.
+-- **Access Token 120 dk:** Tek/az admin senaryosunda refresh token bulunmaz; access token ömrü varsayılan 120 dakikadır (çalınan token'ın açık kalacağı süre sınırlı, şifre değişince security stamp anında iptal eder).
+-- **Giriş olayları loglanır:** başarılı giriş (Information), hatalı şifre ve bilinmeyen hesap (Warning). E-posta loga yazılmaz.
+-- **Refresh token YOK:** Kullanıcı oturumları, RefreshToken ve token rotasyonu S1-S2 reçetesiyle gelir ([`recipes/S1-S2/README.md`](recipes/S1-S2/README.md)).
+-- **Access token anında iptal edilir (security stamp):** `TokenService` access token'a `security_stamp` claim'i ekler; `AuthenticationExtensions` içindeki `OnTokenValidated` her kimliği doğrulanmış istekte bu değeri veritabanındaki `SecurityStamp` ile karşılaştırır. Kullanıcı silinmişse veya stamp farklıysa istek **401** alır. Şifre değişikliği stamp'i yeniler; eski token'lar süresinin dolmasını beklemeden anında geçersiz olur.
+-  - **Bedel:** Kimliği doğrulanmış her istekte kullanıcı başına bir indeksli okuma (anonim ziyaretçi istekleri etkilenmez).
+-- Kullanıcı oturumları, refresh-token ve token iptali S2 reçetesiyle gelir.
++- **Token Süreleri:** Access token ömrü varsayılan 30 dakikadır (Production ortamında 15 dakika; `Jwt:AccessTokenMinutes`), refresh token ömrü 7 gündür (`Jwt:RefreshTokenDays`).
++- **512-Bit Kriptografik Refresh Token:** `TokenService.cs` içinde 64 baytlık (512-bit) tahmin edilemez Refresh Token üretilir.
++- **SHA-256 Hash'li Saklama:** Veritabanında refresh token düz metin tutulmaz; `TokenService.HashToken` ile SHA-256 özeti saklanır, karşılaştırma `CryptographicOperations.FixedTimeEquals` ile sabit zamanlı yapılır. İstemciye yalnızca ham token döner.
++- **Token Rotasyonu:** `/api/auth/refresh-token` çağrıldığında hem yeni bir Access Token hem de yeni bir Refresh Token üretilir ve eski Refresh Token veritabanında ezilir (`UserSessionExtensions.StoreRefreshTokenAsync`).
++- **Güvenli İptal (Revoke):** Refresh Token değeri URL/QueryString üzerinde loglara sızmaması için `[HttpPost("revoke-token")]` uç noktasında `[FromBody] RevokeRefreshTokenRequest` ile gövdeden alınır; veritabanında temizlenir (`204 NoContent`).
++- **Çıkış (Logout):** `[HttpPost("logout")]` ile oturum kapatıldığında refresh token temizlenir ve `UpdateSecurityStampAsync` çağrılarak mevcut access token da anında iptal edilir (`204 NoContent`).
++- **Access token anında iptal edilir (security stamp):** `TokenService` access token'a `security_stamp` claim'i ekler; `AuthenticationExtensions` içindeki `OnTokenValidated` her kimliği doğrulanmış istekte bu değeri veritabanındaki `SecurityStamp` ile karşılaştırır. Kullanıcı silinmişse veya stamp farklıysa istek **401** alır. Logout, şifre değişikliği ve şifre sıfırlama stamp'i yeniler; eski token'lar süresinin dolmasını beklemeden anında geçersiz olur. (Kullanıcı adı değişikliğinde de Identity stamp'i yeniler: o anki access token 401 alır, istemci `refresh-token` ile yeni token alır; yeniden giriş gerekmez.)
++  - **Bedel:** Kimliği doğrulanmış her istekte kullanıcı başına bir indeksli okuma (aynı istekte servisler `FindByIdAsync` çağırırsa EF change tracker'dan döner).
++- **Tek oturum:** Kullanıcı başına tek refresh token saklanır; yeni giriş önceki cihazın refresh token'ını geçersiz kılar (önceki cihaz access token süresi dolunca yeniden giriş yapar). Aynı kullanıcı için eşzamanlı iki login/refresh isteğinden biri `409 Conflict` ("Oturum güncellenemedi") alır; istemci isteği tekrarlar.
++- **Giriş olayları loglanır:** başarılı giriş (Information), hatalı şifre ve bilinmeyen hesap (Warning). E-posta loga yazılmaz; zamanlama analizi saldırılarına karşı dummy PBKDF2 doğrulaması çalışır.
+ 
+ ### 3.2. Kesin IDOR (Insecure Direct Object Reference) Koruması
+-- **`UsersController` (`/api/users/*`)** içindeki hiçbir uç nokta dışarıdan **`Guid userId` parametresi ALMAZ**.
+-- İşlem yapılacak kullanıcı her zaman JWT içindeki `ClaimTypes.NameIdentifier` (`sub`) claim'ini okuyan **`ICurrentUserService.UserId`** üzerinden tespit edilir. Böylece bir kullanıcının başka bir kullanıcının şifresini değiştirmesi mimari düzeyde imkansızdır.
+-- **Rol tabanlı yetki:** `Products` ve `Categories` okuma uçları herkese açıktır; ekleme/güncelleme/silme uçları `[Authorize(Roles = RoleNames.Admin)]` ile yalnızca `Admin` rolüne açıktır.
++- **`UsersController` (`/api/users/*`)** ve **`AuthController.Logout` (`/api/auth/logout`)** içindeki hiçbir uç nokta dışarıdan **`Guid userId` parametresi ALMAZ**.
++- İşlem yapılacak kullanıcı her zaman JWT içindeki `ClaimTypes.NameIdentifier` (`sub`) claim'ini okuyan **`ICurrentUserService.UserId`** üzerinden tespit edilir. Böylece bir kullanıcının başka bir kullanıcının profilini güncellemesi, şifresini değiştirmesi veya oturumunu kapatması mimari düzeyde imkansızdır.
++- **Rol tabanlı yetki:** `Products` ve `Categories` okuma uçları herkese açıktır; ekleme/güncelleme/silme uçları `[Authorize(Roles = RoleNames.Admin)]` ile yalnızca `Admin` rolüne açıktır (kayıt olan kullanıcılar `User` rolü alır ve bu uçlarda 403 döner).
+ 
+ ### 3.3. ASP.NET Core Identity & Brute-Force Koruması
+ - **Parola Politikası:** En az 8 karakter, büyük harf, küçük harf, rakam ve alfanümerik olmayan özel karakter zorunludur (`RequireUniqueEmail = true`).
+ - **Hesap Kilitleme (Account Lockout):** `MaxFailedAccessAttempts = 5` ve `DefaultLockoutTimeSpan = TimeSpan.FromMinutes(15)` aktiftir.
+ - **Kilitli girişte tek tip yanıt:** Kilitli hesapla giriş, şifre doğru olsa bile hatalı şifreyle aynı `401 "E-posta veya şifre hatalı."` yanıtını alır (kilit bilgisi istemciye sızdırılmaz, yalnızca loglanır); kilit 15 dakika sonra kendiliğinden kalkar.
++- **Kilit oturumu düşürmez:** Kilit yalnızca girişi ve şifre değiştirmeyi engeller; `refresh-token` kilit durumuna bakmaz, açık oturum sürer. Bilinçli tercihtir: aksi halde saldırgan 5 hatalı şifreyle gerçek kullanıcının oturumunu düşürebilirdi. Oturumu zorla kapatmak için rol değişikliği, şifre sıfırlama veya hesap silme kullanılır (refresh token silinir, security stamp yenilenir).
+ - `AuthService.LoginAsync` içinde önce `userManager.IsLockedOutAsync(user)` kontrol edilir; şifre yanlışsa `userManager.AccessFailedAsync(user)` çağrılarak sayaç artırılır, doğruysa `ResetAccessFailedCountAsync(user)` ile sıfırlanır.
+ - **Şifre değiştirmede de lockout:** `ChangePasswordAsync` içinde mevcut şifre hatalıysa `AccessFailedAsync` sayacı artar; hesap kilitliyse işlem `403` ile reddedilir.
+-- Kullanıcı kayıt (register), e-posta değişikliği (change-email) ve hesap silme (DeleteAccount) S2/S3 reçetesiyle gelir.
++- **Kullanıcı Numaralandırma (Enumeration) Koruması:** `ForgotPasswordAsync` metodu e-posta sistemde kayıtlı olmasa bile her zaman aynı `204 NoContent` (`ServiceResult.Success`) yanıtını döner; kullanıcı mevcutsa sıfırlama token'ı hem loglanır hem de `IEmailService.SendEmailAsync` ile gönderilir.
++- **Kullanıcı Kaydı (`Registration:AllowPublic`):**
++  - `POST /api/auth/register` ucunda `Registration:AllowPublic = false` (varsayılan) ise yalnızca `Admin` kullanıcı ekleyebilir (anonim istek 401, User rolü 403 alır); `Registration:AllowPublic = true` ise herkese açıktır.
++  - Yeni kullanıcı `Guid.CreateVersion7()` ile açılır ve her zaman varsayılan `User` rolü atanır (`201 Created`). İstemci rol seçemez.
++  - **Açık kayıt (true) seçildiğinde:** login `EmailConfirmed` alanına bakmaz; e-posta doğrulamasının ayrıca eklenmesi gerekir.
++  - **Bilinçli istisna (kayıt):** `register` ucu "e-posta zaten kayıtlı" / "kullanıcı adı kullanılıyor" mesajı döner; bu durum kullanıcı deneyimi içindir ve auth rate limit politikasıyla korunur.
++- Self-servis e-posta değişikliği (change-email) ve hesap silme (DeleteAccount) S3 reçetesiyle gelir ([`recipes/S2-S3/README.md`](recipes/S2-S3/README.md)).
+ 
+ ### 3.4. Rate Limiting (Hız Sınırlandırma)
+ - **Pipeline sırası:** `UseAuthentication()` → `UseRateLimiter()` → `UseAuthorization()`. Limiter kimlik doğrulamadan sonra çalıştığı için kullanıcı bazlı bölümleme mümkündür.
+-- **Tek Global Limiter:** Kimliği doğrulanmış kullanıcılar için `ClaimTypes.NameIdentifier`, anonim istekler için `Connection.RemoteIpAddress` anahtarıyla bölümlenmiş (Partitioned) `FixedWindowLimiter` (varsayılan: dakikada 60 istek, `RateLimiting:Fixed`) çalışır. 429 yanıtı `ServiceResult` formatında ve `Retry-After` başlığıyla döner.
+-- Auth uçlarına özel hız sınırlandırma ve ek limiter politikaları S2 reçetesiyle gelir.
++- **Global Limiter:** Kimliği doğrulanmış kullanıcılar için `ClaimTypes.NameIdentifier`, anonim istekler için `Connection.RemoteIpAddress` anahtarıyla bölümlenmiş (Partitioned) `FixedWindowLimiter` (varsayılan: dakikada 60 istek, `RateLimiting:Fixed`) çalışır. 429 yanıtı `ServiceResult` formatında ve `Retry-After` başlığıyla döner. Auth-policy taşıyan uçlar global limitten muaftır; yalnızca auth-policy'ye tabidir.
++- **Auth Politikası (`auth-policy`):** `AuthController`'ın kimlik bilgisi/token alan uçlarında (`login`, `register`, `refresh-token`, `revoke-token`, `forgot-password`, `reset-password`) `[EnableRateLimiting(RateLimiterExtensions.AuthPolicyName)]` niteliği bulunur (`me` ve `logout` yalnızca global limite tabidir) ve IP başına dakikada varsayılan 15 istekle (`RateLimiting:Auth:PermitLimit`) sınırlandırılır (`429 Too Many Requests`).
++- **Limit sırası:** Auth-policy taşıyan uçlar global limitten muaf olduğundan `RateLimiting:Auth:PermitLimit` değeri global limitten (`RateLimiting:Fixed`, varsayılan 60) küçük tutulmalıdır; büyük verilirse bu uçlar için auth limitinden başka üst sınır kalmaz.
++- **Uca özel `fixed` politikası** (`[EnableRateLimiting(RateLimiterExtensions.FixedPolicyName)]`): `RateLimiterExtensions.FixedPolicyName` ile uca özel sabit pencere politikası sunulur; global limiter gibi kullanıcı/IP bazlı bölümlenir (tek ortak kova değildir).
+ - **Reverse proxy:** `ForwardedHeaders` en başta çalışır; gerçek istemci IP'sinin görünmesi için `ForwardedHeaders:KnownProxies` (tek IP) veya `ForwardedHeaders:KnownNetworks` (CIDR) tanımlanabilir. Canlı ortamda ikisi de boşsa uygulama açılır, proxy yok kabul edilir ve açılışta tek bir uyarı loglanır. Proxy'siz dağıtımda `ForwardedHeaders:NoProxy = true` verilerek uyarı kapatılabilir.
+ 
+ ### 3.5. CORS, HSTS ve HTTP Güvenlik Başlıkları
+@@ -217,7 +232,7 @@ flowchart TD
+ - **`AuditDbContextInterceptor` (`SaveChangesInterceptor`):**
+   - **`EntityState.Added`:** `Created = timeProvider.GetUtcNow().UtcDateTime` (`TimeProvider`) atanır; `Updated` alanının `IsModified` özelliği `false` yapılarak korunur.
+   - **`EntityState.Modified`:** `Created` alanı `IsModified = false` ile korumaya alınır; `Updated = timeProvider.GetUtcNow().UtcDateTime` atanır.
+-- Denetim kullanıcı alanları (`CreatedBy`, `UpdatedBy`), soft delete (`IsDeleted`) ve iyimser eşzamanlılık (`RowVersion`) S2/S3 reçetesiyle gelir ([`recipes/S2-S3/README.md`](recipes/S2-S3/README.md)).
++- Denetim kullanıcı alanları (`CreatedBy`, `UpdatedBy`), soft delete (`IsDeleted`) ve iyimser eşzamanlılık (`RowVersion`) S3 reçetesiyle gelir ([`recipes/S2-S3/README.md`](recipes/S2-S3/README.md)).
+ 
+ ---
+ 
+@@ -262,7 +277,7 @@ sequenceDiagram
+ Projeye örneğin **`Order` (Sipariş)** adında yeni bir modül eklerken aşağıdaki **4 adımlı kontrol listesini** sırasıyla uygulayın:
+ 
+ ### ☐ Adım 1: Entity ve EF Core Konfigürasyonu (`ProjectApp.Repositories/Orders/`)
+-1. `ProjectApp.Repositories/Orders/Order.cs` dosyasını oluşturun (`AuditableEntity`'den türetin; `Created/Updated` zaman damgalarını hazır getirir; soft delete ve RowVersion S2/S3 reçetesiyle gelir):
++1. `ProjectApp.Repositories/Orders/Order.cs` dosyasını oluşturun (`AuditableEntity`'den türetin; `Created/Updated` zaman damgalarını hazır getirir; soft delete ve RowVersion S3 reçetesiyle gelir):
+    ```csharp
+    namespace ProjectApp.Repositories.Orders;
+ 
+@@ -333,7 +348,7 @@ Projeye örneğin **`Order` (Sipariş)** adında yeni bir modül eklerken aşağ
+ 2. `ServiceExtensions.cs` içine `services.AddScoped<IOrderService, OrderService>();` ekleyin.
+ 
+ ### ☐ Adım 3b: Test Ekleme (`tests/`)
+-`tests/ProjectApp.UnitTests/` altına yeni validator ve servis kuralları için birim test (SQLite `TestDb`), `tests/ProjectApp.IntegrationTests/` altına en az bir uç nokta testi ekleyin; `dotnet test ProjectApp.slnx` yeşil olmalıdır.
++`tests/ProjectApp.UnitTests/` altına yeni validator ve servis kuralları için birim test (SQLite `TestDb`), `tests/ProjectApp.IntegrationTests/` altına en az bir uç nokta testi ekleyin (kullanıcı gerektiren testlerde `TestHelpers.RegisterAndLoginAsync(factory, client, Api)` kullanılır); `dotnet test ProjectApp.slnx` yeşil olmalıdır.
+ 
+ ### ☐ Adım 4: Controller Oluşturma (`ProjectApp.API/Controllers/OrdersController.cs`)
+ ```csharp
+@@ -370,21 +385,29 @@ public class OrdersController(IOrderService orderService) : CustomBaseController
+ 
+ | HTTP Metodu | Uç Nokta (Route) | Yetki | İstek Gövdesi (Request Body) | Açıklama ve Davranış |
+ | :---: | :--- | :---: | :--- | :--- |
+-| **`POST`** | `/api/auth/login` | Anonim | `LoginRequest(Email, Password)` | E-posta/şifre doğrular, Brute-Force kilidini kontrol eder, `TokenResponse` döner. |
++| **`POST`** | `/api/auth/login` | Anonim (`auth-policy`) | `LoginRequest(Email, Password)` | E-posta/şifre doğrular, Brute-Force kilidini kontrol eder, `TokenResponse` (accessToken, refreshToken) döner. |
++| **`POST`** | `/api/auth/register` | Ayara bağlı (`auth-policy`) | `RegisterRequest(FullName, UserName, Email, Password)` | `Guid.CreateVersion7()` ile yeni kullanıcı açar ve `User` rolü atar (`201 Created`). `Registration:AllowPublic=false` (varsayılan) ise yalnızca Admin (anonim 401, User 403); `true` ise herkes kayıt olur. İstemci rol seçemez. |
++| **`POST`** | `/api/auth/refresh-token` | Anonim (`auth-policy`) | `RefreshTokenRequest(AccessToken, RefreshToken)` | Süresi dolmuş AccessToken ve geçerli RefreshToken ile yeni token çifti üretir (Rotasyon). |
++| **`POST`** | `/api/auth/revoke-token` | Anonim (`auth-policy`) | `RevokeRefreshTokenRequest(RefreshToken)` | Belirtilen RefreshToken'ı veritabanında sıfırlar (`204 NoContent`). |
++| **`POST`** | `/api/auth/logout` | `[Authorize]` | *Parametre almaz* | `ICurrentUserService.UserId` üzerinden kullanıcının RefreshToken'ını sıfırlar ve `UpdateSecurityStampAsync` ile mevcut access token'ları anında iptal eder (`204 NoContent`). |
++| **`POST`** | `/api/auth/forgot-password` | Anonim (`auth-policy`) | `ForgotPasswordRequest(Email)` | Şifre sıfırlama token'ı üretir, loglar ve `IEmailService` ile gönderir. Enumeration koruması için her zaman `204 NoContent` döner. |
++| **`POST`** | `/api/auth/reset-password` | Anonim (`auth-policy`) | `ResetPasswordRequest(Email, Token, NewPassword)` | Token ile şifreyi sıfırlar, mevcut RefreshToken'ı iptal eder ve SecurityStamp yeniler (`204 NoContent`). |
+ | **`GET`** | `/api/auth/me` | `[Authorize]` | *Yok* | Oturum açmış kullanıcının temel kimlik ve rol bilgilerini (`CurrentUserResponse`) döner. |
+ 
+ > [!NOTE]
+-> Kullanıcı kayıt (register), refresh token, logout ve şifre sıfırlama uçları S2 reçetesiyle gelir ([`recipes/S1-S2/README.md`](recipes/S1-S2/README.md)).
++> Rol yönetimi uçları S3 reçetesiyle gelir ([`recipes/S2-S3/README.md`](recipes/S2-S3/README.md)).
+ 
+ ### 6.2. Kullanıcı ve Profil Yönetimi Uç Noktaları (`UsersController` — `/api/users`)
+-> **IDOR Güvenlik Garantisi:** Uç nokta `[Authorize]` korumalıdır ve dışarıdan **asla `Guid userId` parametresi almaz**; yalnızca oturum açmış kullanıcının (`ICurrentUserService.UserId`) kendi hesabı üzerinde işlem yapar.
++> **IDOR Güvenlik Garantisi:** Uç noktalar `[Authorize]` korumalıdır ve dışarıdan **asla `Guid userId` parametresi almaz**; yalnızca oturum açmış kullanıcının (`ICurrentUserService.UserId`) kendi hesabı üzerinde işlem yapar.
+ 
+ | HTTP Metodu | Uç Nokta (Route) | Yetki | İstek Gövdesi (Request Body) | Açıklama ve Davranış |
+ | :---: | :--- | :---: | :--- | :--- |
+-| **`POST`** | `/api/users/change-password` | `[Authorize]` | `ChangePasswordRequest(CurrentPassword, NewPassword)` | Mevcut şifreyi doğrulayarak şifreyi değiştirir ve `UpdateSecurityStampAsync` çağırarak eski oturumları geçersiz kılar. |
++| **`GET`** | `/api/users/me` | `[Authorize]` | *Yok* | Oturum açmış kullanıcının `Id`, `FullName`, `UserName`, `Email`, `PhoneNumber` ve `Roles` bilgilerini içeren `UserProfileDto` döner. |
++| **`PUT`** | `/api/users/profile` | `[Authorize]` | `UpdateProfileRequest(FullName, UserName, PhoneNumber)` | Ad soyad, kullanıcı adı (benzersizlik kontrolüyle) ve telefon numarasını günceller (`204 NoContent`). Kullanıcı adı değişirse Identity security stamp'i yeniler. |
++| **`POST`** | `/api/users/change-password` | `[Authorize]` | `ChangePasswordRequest(CurrentPassword, NewPassword)` | Mevcut şifreyi doğrulayarak şifreyi değiştirir, `RefreshToken` sıfırlar ve `UpdateSecurityStampAsync` çağırarak eski oturumları geçersiz kılar (`204 NoContent`). |
+ 
+ > [!NOTE]
+-> Profil güncelleme, e-posta değişikliği (change-email) ve hesap silme (DeleteAccount) uçları S2/S3 reçeteleriyle gelir ([`recipes/S1-S2/README.md`](recipes/S1-S2/README.md), [`recipes/S2-S3/README.md`](recipes/S2-S3/README.md)).
++> Self-servis e-posta değişikliği (change-email, confirm-email-change) ve hesap silme (DeleteAccount) uçları S3 reçetesiyle gelir ([`recipes/S2-S3/README.md`](recipes/S2-S3/README.md)).
+ 
+ ### 6.3. Varsayılan Geliştirici Admin Hesabı (`IdentityDataSeeder`)
+ Uygulama **`Development`** ortamında çalıştırıldığında `IdentityDataSeeder.SeedIdentityDataAsync` otomatik olarak migration'ları uygular (`MigrateAsync`), yönetici hesabını açar (`Admin` ve `User` rolleri `AppRoleConfiguration.HasData` ile migration üzerinden her ortama gelir; seeder yalnızca eksikse ekler):
+@@ -469,7 +492,8 @@ Uygulamayı Production ortamına taşırken `appsettings.Production.json` veya O
+ - [ ] **`Cors:AllowedOrigins` (Önerilir):** Canlı Frontend alan adlarınızı (`Cors__AllowedOrigins__0=https://app.alanadiniz.com`) ekleyin; liste boş bırakılırsa uygulama açılır ancak hiçbir kaynağa izin verilmez ve açılışta tek bir uyarı loglanır.
+ - [ ] **Veritabanı:** `dotnet ef database update` ile şemayı kurun; `Admin`/`User` rolleri migration ile gelir. İlk Admin kullanıcıyı Production'da oluşturun.
+ - [ ] **`Seed:AdminPassword`:** Production'da **boş** bırakın (tohumlama yalnızca Development'tadır).
+-- [ ] **`RateLimiting`:** Trafik beklentinize göre `RateLimiting:Fixed:PermitLimit` değerini optimize edin.
++- [ ] **`RateLimiting`:** Trafik beklentinize göre `RateLimiting:Fixed:PermitLimit` ve `RateLimiting:Auth:PermitLimit` değerlerini optimize edin.
++- [ ] **`Jwt` Ayarları:** `Jwt:AccessTokenMinutes` (Production: 15) ve `Jwt:RefreshTokenDays` (7) sürelerini kontrol edin.
+ 
+ ### 8.4. Test Çalıştırma
+ ```powershell
+diff --git a/tests/ProjectApp.IntegrationTests/AdminPasswordRecoveryTests.cs b/tests/ProjectApp.IntegrationTests/AdminPasswordRecoveryTests.cs
+index cef61fe..33ff921 100644
+--- a/tests/ProjectApp.IntegrationTests/AdminPasswordRecoveryTests.cs
++++ b/tests/ProjectApp.IntegrationTests/AdminPasswordRecoveryTests.cs
+@@ -45,6 +45,10 @@ public class AdminPasswordRecoveryTests(CustomWebApplicationFactory factory) : I
+         me.Headers.Authorization = new AuthenticationHeaderValue("Bearer", oldTokens.AccessToken);
+         Assert.Equal(HttpStatusCode.Unauthorized, (await client.SendAsync(me, TestContext.Current.CancellationToken)).StatusCode);
+ 
++        var refresh = await client.PostAsJsonAsync($"{Api}/auth/refresh-token",
++            new { accessToken = oldTokens.AccessToken, refreshToken = oldTokens.RefreshToken }, TestContext.Current.CancellationToken);
++        Assert.Equal(HttpStatusCode.Unauthorized, refresh.StatusCode);
++
+         var oldLogin = await client.PostAsJsonAsync($"{Api}/auth/login", new { email = AdminEmail, password = TestHelpers.Password }, TestContext.Current.CancellationToken);
+         var newLogin = await client.PostAsJsonAsync($"{Api}/auth/login", new { email = AdminEmail, password = NewPassword }, TestContext.Current.CancellationToken);
+ 
+diff --git a/tests/ProjectApp.IntegrationTests/AuthEndpointsTests.cs b/tests/ProjectApp.IntegrationTests/AuthEndpointsTests.cs
+index 8b67ab1..e064e58 100644
+--- a/tests/ProjectApp.IntegrationTests/AuthEndpointsTests.cs
++++ b/tests/ProjectApp.IntegrationTests/AuthEndpointsTests.cs
+@@ -7,22 +7,57 @@ public class AuthEndpointsTests(CustomWebApplicationFactory factory) : IClassFix
+ {
+     private const string Api = "/api";
+ 
++    private static object NewUserBody()
++    {
++        var suffix = Guid.NewGuid().ToString("N")[..10];
++        return new { fullName = "Test Kullanıcı", userName = $"user{suffix}", email = $"u-{suffix}@example.com", password = TestHelpers.Password };
++    }
++
++    [Fact]
++    public async Task Register_AdminTokeniyle_201DonerVeKullaniciGirisYapabilir()
++    {
++        using var client = factory.CreateClient();
++        var adminToken = await factory.GetAdminAccessTokenAsync(client, Api);
++        var suffix = Guid.NewGuid().ToString("N")[..10];
++        var email = $"u-{suffix}@example.com";
++
++        var response = await TestHelpers.PostRegisterAsync(client, Api, adminToken,
++            new { fullName = "Test Kullanıcı", userName = $"user{suffix}", email, password = TestHelpers.Password });
++        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
++
++        var login = await client.PostAsJsonAsync($"{Api}/auth/login", new { email, password = TestHelpers.Password }, TestContext.Current.CancellationToken);
++        Assert.Equal(HttpStatusCode.OK, login.StatusCode);
++    }
++
++    [Fact]
++    public async Task Register_AyniEmailIkinciKez_400Doner()
++    {
++        using var client = factory.CreateClient();
++        var (email, _) = await TestHelpers.RegisterAndLoginAsync(factory, client, Api);
++        var adminToken = await factory.GetAdminAccessTokenAsync(client, Api);
++
++        var response = await TestHelpers.PostRegisterAsync(client, Api, adminToken,
++            new { fullName = "Başka Kullanıcı", userName = $"other{Guid.NewGuid():N}"[..15], email, password = TestHelpers.Password });
++
++        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
++    }
++
+     [Fact]
+     public async Task Login_DogruBilgiler_TokenDoner()
+     {
+         using var client = factory.CreateClient();
+ 
+-        var (_, tokens) = await factory.CreateUserAndLoginAsync(client, Api);
++        var (_, tokens) = await TestHelpers.RegisterAndLoginAsync(factory, client, Api);
+ 
+         Assert.False(string.IsNullOrWhiteSpace(tokens.AccessToken));
+-        Assert.True(tokens.AccessTokenExpiresAt > DateTime.UtcNow);
++        Assert.False(string.IsNullOrWhiteSpace(tokens.RefreshToken));
+     }
+ 
+     [Fact]
+     public async Task Login_YanlisSifre_401Doner()
+     {
+         using var client = factory.CreateClient();
+-        var (email, _) = await factory.CreateUserAndLoginAsync(client, Api);
++        var (email, _) = await TestHelpers.RegisterAndLoginAsync(factory, client, Api);
+ 
+         var response = await client.PostAsJsonAsync($"{Api}/auth/login", new { email, password = "Yanlis12*Sifre" }, TestContext.Current.CancellationToken);
+ 
+@@ -43,13 +78,51 @@ public class AuthEndpointsTests(CustomWebApplicationFactory factory) : IClassFix
+     public async Task Me_TokenVarsa_200Doner()
+     {
+         using var client = factory.CreateClient();
+-        var (_, tokens) = await factory.CreateUserAndLoginAsync(client, Api);
++        var (_, tokens) = await TestHelpers.RegisterAndLoginAsync(factory, client, Api);
+         client.Authorize(tokens.AccessToken);
+ 
+         var response = await client.GetAsync($"{Api}/auth/me", TestContext.Current.CancellationToken);
++
+         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++    }
+ 
++    [Fact]
++    public async Task Register_KullaniciVarsayilanUserRolundeOlusur()
++    {
++        // Roller migration/HasData ile gelir; seeder çalışmasa bile kayıt User rolünü atayabilmeli.
++        using var client = factory.CreateClient();
++        var (_, tokens) = await TestHelpers.RegisterAndLoginAsync(factory, client, Api);
++        client.Authorize(tokens.AccessToken);
++
++        var response = await client.GetAsync($"{Api}/auth/me", TestContext.Current.CancellationToken);
++        response.EnsureSuccessStatusCode();
+         var me = await response.ReadDataAsync<CurrentUserData>();
++
+         Assert.Contains("User", me.Roles);
+     }
++
++    [Fact]
++    public async Task RefreshToken_AyniTokenIkinciKezKullanilirsa_401Doner()
++    {
++        using var client = factory.CreateClient();
++        var (_, tokens) = await TestHelpers.RegisterAndLoginAsync(factory, client, Api);
++        var request = new { accessToken = tokens.AccessToken, refreshToken = tokens.RefreshToken };
++
++        var first = await client.PostAsJsonAsync($"{Api}/auth/refresh-token", request, TestContext.Current.CancellationToken);
++        var second = await client.PostAsJsonAsync($"{Api}/auth/refresh-token", request, TestContext.Current.CancellationToken);
++
++        Assert.Equal(HttpStatusCode.OK, first.StatusCode);
++        Assert.Equal(HttpStatusCode.Unauthorized, second.StatusCode);
++    }
++
++    [Fact]
++    public async Task RefreshToken_BozukAccessToken_401Doner()
++    {
++        using var client = factory.CreateClient();
++
++        var response = await client.PostAsJsonAsync($"{Api}/auth/refresh-token",
++            new { accessToken = "bozuk-token", refreshToken = "bozuk-refresh" }, TestContext.Current.CancellationToken);
++
++        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
++    }
+ }
+diff --git a/tests/ProjectApp.IntegrationTests/CatalogEndpointsTests.cs b/tests/ProjectApp.IntegrationTests/CatalogEndpointsTests.cs
+index 653de76..a16a7ba 100644
+--- a/tests/ProjectApp.IntegrationTests/CatalogEndpointsTests.cs
++++ b/tests/ProjectApp.IntegrationTests/CatalogEndpointsTests.cs
+@@ -21,16 +21,6 @@ public class CatalogEndpointsTests(CustomWebApplicationFactory factory) : IClass
+         return (await response.ReadDataAsync<IdResponse>()).Id;
+     }
+ 
+-    [Fact]
+-    public async Task GetCategories_Anonim_200Doner()
+-    {
+-        using var client = factory.CreateClient();
+-
+-        var response = await client.GetAsync($"{Api}/categories", TestContext.Current.CancellationToken);
+-
+-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+-    }
+-
+     [Fact]
+     public async Task CreateCategory_TokenYoksa_401Doner()
+     {
+@@ -45,7 +35,7 @@ public class CatalogEndpointsTests(CustomWebApplicationFactory factory) : IClass
+     public async Task CreateCategory_UserRoluyle_403Doner()
+     {
+         using var client = factory.CreateClient();
+-        var (_, tokens) = await factory.CreateUserAndLoginAsync(client, Api);
++        var (_, tokens) = await TestHelpers.RegisterAndLoginAsync(factory, client, Api);
+         client.Authorize(tokens.AccessToken);
+ 
+         var response = await client.PostAsJsonAsync($"{Api}/categories", new { name = $"Kategori-{Guid.NewGuid():N}"[..20] }, TestContext.Current.CancellationToken);
+diff --git a/tests/ProjectApp.IntegrationTests/CustomWebApplicationFactory.cs b/tests/ProjectApp.IntegrationTests/CustomWebApplicationFactory.cs
+index d518253..af2d2ef 100644
+--- a/tests/ProjectApp.IntegrationTests/CustomWebApplicationFactory.cs
++++ b/tests/ProjectApp.IntegrationTests/CustomWebApplicationFactory.cs
+@@ -23,6 +23,7 @@ public class CustomWebApplicationFactory : WebApplicationFactory<Program>
+         Environment.SetEnvironmentVariable("Jwt__SigningKey", "test-signing-key-en-az-32-karakter-uzunlugunda!");
+         Environment.SetEnvironmentVariable("ConnectionStrings__DefaultConnection", "Server=test;Database=test");
+         Environment.SetEnvironmentVariable("RateLimiting__Fixed__PermitLimit", "100000");
++        Environment.SetEnvironmentVariable("RateLimiting__Auth__PermitLimit", "100000");
+     }
+ 
+     protected override IHost CreateHost(IHostBuilder builder)
+@@ -60,8 +61,12 @@ public class CustomWebApplicationFactory : WebApplicationFactory<Program>
+     }
+ 
+     /// <summary>
+-    /// Admin rolünde bir test kullanıcısı oluşturur ve onunla giriş yapar (katalog yazma uçları Admin ister).
++    /// Test kullanıcısı açıp giriş yapar (kayıt admin üzerinden yapılır). Eski testler bu yardımcıyı kullanır;
++    /// yeni testlerde doğrudan <see cref="TestHelpers.RegisterAndLoginAsync"/> kullanın.
+     /// </summary>
++    public Task<(string Email, TokenData Tokens)> CreateUserAndLoginAsync(HttpClient client, string routePrefix) =>
++        TestHelpers.RegisterAndLoginAsync(this, client, routePrefix);
++
+     public async Task<string> GetAdminAccessTokenAsync(HttpClient client, string routePrefix)
+     {
+         var suffix = Guid.NewGuid().ToString("N")[..10];
+@@ -82,36 +87,6 @@ public class CustomWebApplicationFactory : WebApplicationFactory<Program>
+         return (await login.ReadDataAsync<TokenData>()).AccessToken;
+     }
+ 
+-    /// <summary>
+-    /// User rolünde bir test kullanıcısı oluşturur ve onunla giriş yapar (S1 seviyesinde register ucu yoktur).
+-    /// </summary>
+-    public async Task<(string Email, TokenData Tokens)> CreateUserAndLoginAsync(HttpClient client, string routePrefix)
+-    {
+-        var suffix = Guid.NewGuid().ToString("N")[..10];
+-        var email = $"user-{suffix}@example.com";
+-
+-        using (var scope = Services.CreateScope())
+-        {
+-            var userManager = scope.ServiceProvider.GetRequiredService<UserManager<AppUser>>();
+-            var user = new AppUser
+-            {
+-                Id = Guid.CreateVersion7(),
+-                FullName = "Test Kullanıcı",
+-                UserName = $"user{suffix}",
+-                Email = email,
+-                EmailConfirmed = true
+-            };
+-            var created = await userManager.CreateAsync(user, TestHelpers.Password);
+-            Assert.True(created.Succeeded, string.Join(", ", created.Errors.Select(e => e.Description)));
+-            var role = await userManager.AddToRoleAsync(user, RoleNames.User);
+-            Assert.True(role.Succeeded);
+-        }
+-
+-        var login = await client.PostAsJsonAsync($"{routePrefix}/auth/login", new { email, password = TestHelpers.Password });
+-        login.EnsureSuccessStatusCode();
+-        return (email, await login.ReadDataAsync<TokenData>());
+-    }
+-
+     protected override void Dispose(bool disposing)
+     {
+         base.Dispose(disposing);
+diff --git a/tests/ProjectApp.IntegrationTests/SecurityEndpointsTests.cs b/tests/ProjectApp.IntegrationTests/SecurityEndpointsTests.cs
+index 31d7ede..89fb579 100644
+--- a/tests/ProjectApp.IntegrationTests/SecurityEndpointsTests.cs
++++ b/tests/ProjectApp.IntegrationTests/SecurityEndpointsTests.cs
+@@ -7,7 +7,7 @@ using Microsoft.Extensions.Options;
+ namespace ProjectApp.IntegrationTests;
+ 
+ /// <summary>
+-/// Şifre değiştirme, hesap kilitleme (lockout), global rate limit ve girdi doğrulama testleri.
++/// Oturum iptali (security stamp), hesap kilitleme, kullanıcı uçları, stok eşzamanlılığı ve korelasyon kimliği.
+ /// </summary>
+ public class SecurityEndpointsTests(CustomWebApplicationFactory factory) : IClassFixture<CustomWebApplicationFactory>
+ {
+@@ -18,46 +18,43 @@ public class SecurityEndpointsTests(CustomWebApplicationFactory factory) : IClas
+     private const string Api = "/api";
+ 
+     [Fact]
+-    public async Task SifreDegisikligi_DogruMevcutSifre_204DonerVeYeniSifreyleGirisCalisir()
++    public async Task Logout_SonrasiEskiAccessToken_401Doner()
+     {
+         using var client = factory.CreateClient();
+-        var (email, tokens) = await factory.CreateUserAndLoginAsync(client, Api);
++        var (_, tokens) = await TestHelpers.RegisterAndLoginAsync(factory, client, Api);
+         client.Authorize(tokens.AccessToken);
+-        const string newPassword = "YeniSifre12*";
+ 
+-        var change = await client.PostAsJsonAsync($"{Api}/users/change-password",
+-            new { currentPassword = TestHelpers.Password, newPassword }, TestContext.Current.CancellationToken);
+-        Assert.Equal(HttpStatusCode.NoContent, change.StatusCode);
++        var logout = await client.PostAsync($"{Api}/auth/logout", null, TestContext.Current.CancellationToken);
++        Assert.Equal(HttpStatusCode.NoContent, logout.StatusCode);
+ 
+-        // Şifre değişikliği security stamp'i yeniler: eski access token anında geçersizdir.
+-        var meWithOldToken = await client.GetAsync($"{Api}/auth/me", TestContext.Current.CancellationToken);
+-        Assert.Equal(HttpStatusCode.Unauthorized, meWithOldToken.StatusCode);
+-
+-        var oldLogin = await client.PostAsJsonAsync($"{Api}/auth/login", new { email, password = TestHelpers.Password }, TestContext.Current.CancellationToken);
+-        Assert.Equal(HttpStatusCode.Unauthorized, oldLogin.StatusCode);
+-
+-        var login = await client.PostAsJsonAsync($"{Api}/auth/login", new { email, password = newPassword }, TestContext.Current.CancellationToken);
+-        Assert.Equal(HttpStatusCode.OK, login.StatusCode);
++        var me = await client.GetAsync($"{Api}/users/me", TestContext.Current.CancellationToken);
++        Assert.Equal(HttpStatusCode.Unauthorized, me.StatusCode);
+     }
+ 
+     [Fact]
+-    public async Task SifreDegisikligi_YanlisMevcutSifre_400Doner()
++    public async Task SifreDegisikligi_SonrasiEskiToken401_YeniSifreyleGirisCalisir()
+     {
+         using var client = factory.CreateClient();
+-        var (_, tokens) = await factory.CreateUserAndLoginAsync(client, Api);
++        var (email, tokens) = await TestHelpers.RegisterAndLoginAsync(factory, client, Api);
+         client.Authorize(tokens.AccessToken);
++        const string newPassword = "YeniSifre12*";
+ 
+         var change = await client.PostAsJsonAsync($"{Api}/users/change-password",
+-            new { currentPassword = "Yanlis12*Sifre", newPassword = "YeniSifre12*" }, TestContext.Current.CancellationToken);
++            new { currentPassword = TestHelpers.Password, newPassword }, TestContext.Current.CancellationToken);
++        Assert.Equal(HttpStatusCode.NoContent, change.StatusCode);
++
++        var me = await client.GetAsync($"{Api}/users/me", TestContext.Current.CancellationToken);
++        Assert.Equal(HttpStatusCode.Unauthorized, me.StatusCode);
+ 
+-        Assert.Equal(HttpStatusCode.BadRequest, change.StatusCode);
++        var login = await client.PostAsJsonAsync($"{Api}/auth/login", new { email, password = newPassword }, TestContext.Current.CancellationToken);
++        Assert.Equal(HttpStatusCode.OK, login.StatusCode);
+     }
+ 
+     [Fact]
+     public async Task Login_BesYanlisDenemedenSonra_DogruSifreDe401Doner()
+     {
+         using var client = factory.CreateClient();
+-        var (email, _) = await factory.CreateUserAndLoginAsync(client, Api);
++        var (email, _) = await TestHelpers.RegisterAndLoginAsync(factory, client, Api);
+ 
+         for (var i = 0; i < MaxFailedAttempts; i++)
+         {
+@@ -70,20 +67,19 @@ public class SecurityEndpointsTests(CustomWebApplicationFactory factory) : IClas
+     }
+ 
+     [Fact]
+-    public async Task GlobalRateLimit_LimitAsildiginda_429Doner()
++    public async Task ProfilGuncelleme_204DonerVeProfildeGorunur()
+     {
+-        using var rateLimitedFactory = factory.WithWebHostBuilder(
+-            builder => builder.UseSetting("RateLimiting:Fixed:PermitLimit", "2"));
+-        using var client = rateLimitedFactory.CreateClient();
+-
+-        var first = await client.GetAsync($"{Api}/categories", TestContext.Current.CancellationToken);
+-        var second = await client.GetAsync($"{Api}/categories", TestContext.Current.CancellationToken);
+-        var third = await client.GetAsync($"{Api}/categories", TestContext.Current.CancellationToken);
+-
+-        Assert.Equal(HttpStatusCode.OK, first.StatusCode);
+-        Assert.Equal(HttpStatusCode.OK, second.StatusCode);
+-        Assert.Equal(HttpStatusCode.TooManyRequests, third.StatusCode);
+-        Assert.True(third.Headers.RetryAfter is not null);
++        using var client = factory.CreateClient();
++        var (_, tokens) = await TestHelpers.RegisterAndLoginAsync(factory, client, Api);
++        client.Authorize(tokens.AccessToken);
++
++        var me = await client.GetFromJsonAsync<ApiResponse<ProfileData>>($"{Api}/users/me", TestContext.Current.CancellationToken);
++        var update = await client.PutAsJsonAsync($"{Api}/users/profile",
++            new { fullName = "Güncel Ad", userName = me!.Data!.UserName, phoneNumber = "5551112233" }, TestContext.Current.CancellationToken);
++        Assert.Equal(HttpStatusCode.NoContent, update.StatusCode);
++
++        var after = await client.GetFromJsonAsync<ApiResponse<ProfileData>>($"{Api}/users/me", TestContext.Current.CancellationToken);
++        Assert.Equal("Güncel Ad", after!.Data!.FullName);
+     }
+ 
+     [Theory]
+@@ -103,10 +99,21 @@ public class SecurityEndpointsTests(CustomWebApplicationFactory factory) : IClas
+         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+     }
+ 
++    private sealed record ProfileData(Guid Id, string FullName, string UserName, string Email);
++
+     private static async Task<Guid> CreateCategoryAsync(HttpClient client)
+     {
+         var response = await client.PostAsJsonAsync($"{Api}/categories", new { name = $"Kat{Guid.NewGuid():N}"[..20] }, TestContext.Current.CancellationToken);
+         response.EnsureSuccessStatusCode();
+         return (await response.ReadDataAsync<IdResponse>()).Id;
+     }
++
++    private static async Task<Guid> CreateProductAsync(HttpClient client, decimal price)
++    {
++        var categoryId = await CreateCategoryAsync(client);
++        var response = await client.PostAsJsonAsync($"{Api}/products",
++            new { name = $"Urun {Guid.NewGuid():N}"[..20], price, stock = 10, categoryId }, TestContext.Current.CancellationToken);
++        response.EnsureSuccessStatusCode();
++        return (await response.ReadDataAsync<IdResponse>()).Id;
++    }
+ }
+diff --git a/tests/ProjectApp.IntegrationTests/TestHelpers.cs b/tests/ProjectApp.IntegrationTests/TestHelpers.cs
+index 914f809..d7f0846 100644
+--- a/tests/ProjectApp.IntegrationTests/TestHelpers.cs
++++ b/tests/ProjectApp.IntegrationTests/TestHelpers.cs
+@@ -5,7 +5,11 @@ namespace ProjectApp.IntegrationTests;
+ 
+ public record ApiResponse<T>(T? Data, List<string>? ErrorMessage);
+ public record IdResponse(Guid Id);
+-public record TokenData(string AccessToken, DateTime AccessTokenExpiresAt);
++public record TokenData(string AccessToken, string RefreshToken)
++{
++    /// <summary>S1 testleriyle uyumluluk (S1'deki TokenData bu alanı taşır).</summary>
++    public DateTime AccessTokenExpiresAt { get; init; }
++}
+ public record CurrentUserData(Guid Id, List<string> Roles);
+ public record ProductItem(Guid Id, string Name, decimal Price, int Stock, Guid CategoryId);
+ public record PagedData<T>(List<T> Items, int TotalCount, int PageNumber, int PageSize);
+@@ -20,6 +24,37 @@ public static class TestHelpers
+         return body!.Data!;
+     }
+ 
++    /// <summary>
++    /// Kayıt, kapalı kayıt modunda (Registration:AllowPublic=false) da çalışsın diye admin token'ıyla yapılır.
++    /// Token istek bazlı başlıkla gönderilir; client'ın varsayılan Authorization başlığı değişmez.
++    /// </summary>
++    public static async Task<(string Email, TokenData Tokens)> RegisterAndLoginAsync(CustomWebApplicationFactory factory, HttpClient client, string routePrefix)
++    {
++        var suffix = Guid.NewGuid().ToString("N")[..10];
++        var email = $"user-{suffix}@example.com";
++        var adminToken = await factory.GetAdminAccessTokenAsync(client, routePrefix);
++
++        var register = await PostRegisterAsync(client, routePrefix, adminToken,
++            new { fullName = "Test Kullanıcı", userName = $"user{suffix}", email, password = Password });
++        register.EnsureSuccessStatusCode();
++
++        var login = await client.PostAsJsonAsync($"{routePrefix}/auth/login", new { email, password = Password });
++        login.EnsureSuccessStatusCode();
++
++        return (email, await login.ReadDataAsync<TokenData>());
++    }
++
++    /// <summary>
++    /// Register isteğini verilen token ile (null ise anonim) gönderir; client başlıklarını değiştirmez.
++    /// </summary>
++    public static async Task<HttpResponseMessage> PostRegisterAsync(HttpClient client, string routePrefix, string? accessToken, object body)
++    {
++        using var request = new HttpRequestMessage(HttpMethod.Post, $"{routePrefix}/auth/register") { Content = JsonContent.Create(body) };
++        if (accessToken is not null)
++            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
++        return await client.SendAsync(request);
++    }
++
+     public static void Authorize(this HttpClient client, string accessToken) =>
+         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+ }
+diff --git a/tests/ProjectApp.UnitTests/JwtOptionsValidationTests.cs b/tests/ProjectApp.UnitTests/JwtOptionsValidationTests.cs
+index 72f7a93..89187d7 100644
+--- a/tests/ProjectApp.UnitTests/JwtOptionsValidationTests.cs
++++ b/tests/ProjectApp.UnitTests/JwtOptionsValidationTests.cs
+@@ -10,7 +10,8 @@ public class JwtOptionsValidationTests
+         Issuer = "issuer",
+         Audience = "audience",
+         SigningKey = new string('k', 32),
+-        AccessTokenMinutes = 120
++        AccessTokenMinutes = 15,
++        RefreshTokenDays = 7
+     };
+ 
+     private static List<ValidationResult> Validate(JwtOptions options) =>
+@@ -23,12 +24,14 @@ public class JwtOptionsValidationTests
+     }
+ 
+     [Theory]
+-    [InlineData(0)]
+-    [InlineData(-5)]
+-    public void SifirVeyaNegatifSure_HataUretir(int accessTokenMinutes)
++    [InlineData(0, 7)]
++    [InlineData(-5, 7)]
++    [InlineData(15, 0)]
++    public void SifirVeyaNegatifSure_HataUretir(int accessTokenMinutes, int refreshTokenDays)
+     {
+         var options = Valid();
+         options.AccessTokenMinutes = accessTokenMinutes;
++        options.RefreshTokenDays = refreshTokenDays;
+ 
+         Assert.NotEmpty(Validate(options));
+     }
+diff --git a/tests/ProjectApp.UnitTests/TokenServiceTests.cs b/tests/ProjectApp.UnitTests/TokenServiceTests.cs
+index 035b3b2..4c0c062 100644
+--- a/tests/ProjectApp.UnitTests/TokenServiceTests.cs
++++ b/tests/ProjectApp.UnitTests/TokenServiceTests.cs
+@@ -1,7 +1,3 @@
+-using System.IdentityModel.Tokens.Jwt;
+-using System.Security.Claims;
+-using Microsoft.Extensions.Options;
+-using ProjectApp.Repositories.Identity;
+ using ProjectApp.Services.Identity;
+ 
+ namespace ProjectApp.UnitTests;
+@@ -9,33 +5,23 @@ namespace ProjectApp.UnitTests;
+ public class TokenServiceTests
+ {
+     [Fact]
+-    public void CreateAccessToken_GecerliKullaniciVeRoller_ClaimVeBitisZamaniUretir()
++    public void HashToken_AyniGirdiAyniCiktiVerir()
+     {
+-        var options = Options.Create(new JwtOptions
+-        {
+-            Issuer = "ProjectApp",
+-            Audience = "ProjectAppUsers",
+-            SigningKey = new string('k', 32),
+-            AccessTokenMinutes = 120
+-        });
+-        var service = new TokenService(options, TimeProvider.System);
+-        var user = new AppUser
+-        {
+-            Id = Guid.CreateVersion7(),
+-            UserName = "admin",
+-            Email = "admin@admin.com",
+-            FullName = "Admin User"
+-        };
++        Assert.Equal(TokenService.HashToken("token-1"), TokenService.HashToken("token-1"));
++    }
+ 
+-        var (accessToken, expiry) = service.CreateAccessToken(user, [RoleNames.Admin]);
+-        var jwt = new JwtSecurityTokenHandler().ReadJwtToken(accessToken);
++    [Fact]
++    public void HashToken_FarkliGirdiFarkliCiktiVerir()
++    {
++        Assert.NotEqual(TokenService.HashToken("token-1"), TokenService.HashToken("token-2"));
++    }
++
++    [Fact]
++    public void HashToken_64KarakterHexDoner()
++    {
++        var hash = TokenService.HashToken("token-1");
+ 
+-        Assert.False(string.IsNullOrWhiteSpace(accessToken));
+-        Assert.Equal("ProjectApp", jwt.Issuer);
+-        Assert.Equal(expiry, jwt.ValidTo, TimeSpan.FromSeconds(1));
+-        Assert.Contains(jwt.Claims, c => c.Type == ClaimTypes.NameIdentifier && c.Value == user.Id.ToString());
+-        Assert.Contains(jwt.Claims, c => c.Type == ClaimTypes.Email && c.Value == user.Email);
+-        Assert.Contains(jwt.Claims, c => c.Type == ClaimTypes.Name && c.Value == user.UserName);
+-        Assert.Contains(jwt.Claims, c => c.Type == ClaimTypes.Role && c.Value == RoleNames.Admin);
++        Assert.Equal(64, hash.Length);
++        Assert.Matches("^[0-9a-fA-F]{64}$", hash);
+     }
+ }
+diff --git a/tests/ProjectApp.UnitTests/ValidatorTests.cs b/tests/ProjectApp.UnitTests/ValidatorTests.cs
+index 294f042..8783102 100644
+--- a/tests/ProjectApp.UnitTests/ValidatorTests.cs
++++ b/tests/ProjectApp.UnitTests/ValidatorTests.cs
+@@ -1,14 +1,14 @@
+ using System.Globalization;
++using ProjectApp.Services.Features.Auth.Dtos;
++using ProjectApp.Services.Features.Auth.Validators;
+ using ProjectApp.Services.Features.Products.Create;
+-using ProjectApp.Services.Features.Users.Dtos;
+-using ProjectApp.Services.Features.Users.Validators;
+ 
+ namespace ProjectApp.UnitTests;
+ 
+ public class ValidatorTests
+ {
+     private readonly CreateProductRequestValidator _productValidator = new();
+-    private readonly ChangePasswordRequestValidator _changePasswordValidator = new();
++    private readonly RegisterRequestValidator _registerValidator = new();
+ 
+     [Fact]
+     public void CreateProduct_BosIsim_HataVerir()
+@@ -63,18 +63,18 @@ public class ValidatorTests
+     [InlineData("abc12345")]      // büyük harf ve özel karakter yok
+     [InlineData("Abcdef1")]       // çok kısa ve özel karakter yok
+     [InlineData("ABCDEFG1*")]     // küçük harf yok
+-    public void ChangePassword_ZayifSifre_HataVerir(string password)
++    public void Register_ZayifSifre_HataVerir(string password)
+     {
+-        var result = _changePasswordValidator.Validate(new ChangePasswordRequest("EskiSifre12*", password));
++        var result = _registerValidator.Validate(new RegisterRequest("Test Kullanıcı", "testuser", "test@example.com", password));
+ 
+         Assert.False(result.IsValid);
+-        Assert.Contains(result.Errors, e => e.PropertyName == nameof(ChangePasswordRequest.NewPassword));
++        Assert.Contains(result.Errors, e => e.PropertyName == nameof(RegisterRequest.Password));
+     }
+ 
+     [Fact]
+-    public void ChangePassword_GucluSifre_Gecer()
++    public void Register_GucluSifre_Gecer()
+     {
+-        var result = _changePasswordValidator.Validate(new ChangePasswordRequest("EskiSifre12*", "Password12*"));
++        var result = _registerValidator.Validate(new RegisterRequest("Test Kullanıcı", "testuser", "test@example.com", "Password12*"));
+ 
+         Assert.True(result.IsValid);
+     }

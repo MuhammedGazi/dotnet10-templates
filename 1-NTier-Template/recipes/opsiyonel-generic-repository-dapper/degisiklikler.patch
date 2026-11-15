@@ -1,0 +1,666 @@
+diff --git a/Directory.Packages.props b/Directory.Packages.props
+index 0223cbe..d9ac417 100644
+--- a/Directory.Packages.props
++++ b/Directory.Packages.props
+@@ -6,6 +6,7 @@
+ 
+   <ItemGroup>
+     <PackageVersion Include="AspNetCore.HealthChecks.SqlServer" Version="9.0.0" />
++    <PackageVersion Include="Dapper" Version="2.1.89" />
+     <PackageVersion Include="FluentValidation.DependencyInjectionExtensions" Version="12.2.0" />
+     <PackageVersion Include="Mapster" Version="10.0.14" />
+     <PackageVersion Include="Mapster.DependencyInjection" Version="10.0.14" />
+diff --git a/ProjectApp.API/Controllers/ProductsController.cs b/ProjectApp.API/Controllers/ProductsController.cs
+index 1035b12..5222638 100644
+--- a/ProjectApp.API/Controllers/ProductsController.cs
++++ b/ProjectApp.API/Controllers/ProductsController.cs
+@@ -21,6 +21,10 @@ public class ProductsController(IProductService productService) : CustomBaseCont
+     public async Task<IActionResult> GetPaged([FromQuery] PagedRequest request, CancellationToken cancellationToken) =>
+         CreateActionResult(await productService.GetPagedAllListAsync(request, cancellationToken));
+ 
++    [HttpGet("top-priced")]
++    public async Task<IActionResult> GetTopPriced([FromQuery] int count = 5, CancellationToken cancellationToken = default) =>
++        CreateActionResult(await productService.GetTopPricedProductsWithDapperAsync(Math.Clamp(count, 1, 50), cancellationToken));
++
+     [HttpGet("{id:guid}")]
+     public async Task<IActionResult> GetById(Guid id, CancellationToken cancellationToken) =>
+         CreateActionResult(await productService.GetByIdAsync(id, cancellationToken));
+diff --git a/ProjectApp.API/Extensions/ControllerExtensions.cs b/ProjectApp.API/Extensions/ControllerExtensions.cs
+index 0543f71..93e0ca4 100644
+--- a/ProjectApp.API/Extensions/ControllerExtensions.cs
++++ b/ProjectApp.API/Extensions/ControllerExtensions.cs
+@@ -13,6 +13,8 @@ public static class ControllerExtensions
+             options.SuppressModelStateInvalidFilter = true;
+         });
+ 
++        services.AddScoped(typeof(NotFoundFilter<,>));
++
+         services.AddControllers(options =>
+         {
+             options.Filters.Add<FluentValidationFilter>();
+diff --git a/ProjectApp.API/ProjectApp.API.http b/ProjectApp.API/ProjectApp.API.http
+index a1b90cb..8d419d9 100644
+--- a/ProjectApp.API/ProjectApp.API.http
++++ b/ProjectApp.API/ProjectApp.API.http
+@@ -143,6 +143,9 @@ GET {{baseUrl}}/products
+ ### Sayfalı ürün listesi
+ GET {{baseUrl}}/products/paged?pageNumber=1&pageSize=10
+ 
++### En pahalı ürünler (Dapper örneği)
++GET {{baseUrl}}/products/top-priced?count=5
++
+ ### Kategori ve ürünleri
+ GET {{baseUrl}}/categories/{{categoryId}}/products
+ 
+diff --git a/ProjectApp.Repositories/Extensions/RepositoryExtensions.cs b/ProjectApp.Repositories/Extensions/RepositoryExtensions.cs
+index cf937e4..b68da6d 100644
+--- a/ProjectApp.Repositories/Extensions/RepositoryExtensions.cs
++++ b/ProjectApp.Repositories/Extensions/RepositoryExtensions.cs
+@@ -1,4 +1,6 @@
+-﻿using ProjectApp.Repositories.Interceptors;
++﻿using ProjectApp.Repositories.Categories;
++using ProjectApp.Repositories.Interceptors;
++using ProjectApp.Repositories.Products;
+ using Microsoft.EntityFrameworkCore;
+ using Microsoft.Extensions.Configuration;
+ using Microsoft.Extensions.DependencyInjection;
+@@ -29,7 +31,11 @@ public static class RepositoryExtensions
+ 
+             options.AddInterceptors(serviceProvider.GetRequiredService<AuditDbContextInterceptor>());
+         });
++        services.AddScoped<IProductRepository, ProductRepository>();
++        services.AddScoped<ICategoryRepository, CategoryRepository>();
++        services.AddScoped(typeof(IGenericRepository<,>), typeof(GenericRepository<,>));
+ 
++        services.AddScoped<IUnitOfWork, UnitOfWork>();
+         return services;
+     }
+ }
+diff --git a/ProjectApp.Repositories/ProjectApp.Repositories.csproj b/ProjectApp.Repositories/ProjectApp.Repositories.csproj
+index 204051a..8a15e04 100644
+--- a/ProjectApp.Repositories/ProjectApp.Repositories.csproj
++++ b/ProjectApp.Repositories/ProjectApp.Repositories.csproj
+@@ -1,6 +1,7 @@
+ <Project Sdk="Microsoft.NET.Sdk">
+ 
+   <ItemGroup>
++    <PackageReference Include="Dapper" />
+     <PackageReference Include="Microsoft.AspNetCore.Identity.EntityFrameworkCore" />
+     <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" />
+     <PackageReference Include="Microsoft.EntityFrameworkCore.Tools">
+diff --git a/ProjectApp.Services/Features/Categories/CategoryService.cs b/ProjectApp.Services/Features/Categories/CategoryService.cs
+index 14fbadf..7373965 100644
+--- a/ProjectApp.Services/Features/Categories/CategoryService.cs
++++ b/ProjectApp.Services/Features/Categories/CategoryService.cs
+@@ -1,30 +1,32 @@
+ using System.Net;
+-using Mapster;
+-using MapsterMapper;
+-using Microsoft.EntityFrameworkCore;
+ using ProjectApp.Repositories;
+ using ProjectApp.Repositories.Categories;
+ using ProjectApp.Repositories.Products;
+ using ProjectApp.Services.Features.Categories.Create;
+ using ProjectApp.Services.Features.Categories.Dto;
+ using ProjectApp.Services.Features.Categories.Update;
++using Mapster;
++using MapsterMapper;
++using Microsoft.EntityFrameworkCore;
+ 
+ namespace ProjectApp.Services.Features.Categories;
+ 
+ public class CategoryService(
+-    AppDbContext context,
++    ICategoryRepository categoryRepository,
++    IProductRepository productRepository,
++    IUnitOfWork unitOfWork,
+     IMapper mapper) : ICategoryService
+ {
+     public async Task<ServiceResult<List<CategoryDto>>> GetAllListAsync(CancellationToken cancellationToken = default)
+     {
+-        var categoriesAsDto = await context.Categories.AsNoTracking().ProjectToType<CategoryDto>().ToListAsync(cancellationToken);
++        var categoriesAsDto = await categoryRepository.GetAll().ProjectToType<CategoryDto>().ToListAsync(cancellationToken);
+ 
+         return ServiceResult<List<CategoryDto>>.Success(categoriesAsDto);
+     }
+ 
+     public async Task<ServiceResult<CategoryDto?>> GetByIdAsync(Guid id, CancellationToken cancellationToken = default)
+     {
+-        var category = await context.Categories.FindAsync([id], cancellationToken);
++        var category = await categoryRepository.GetByIdAsync(id, cancellationToken);
+         if (category is null)
+         {
+             return ServiceResult<CategoryDto?>.Fail("Kategori bulunamadı.", HttpStatusCode.NotFound);
+@@ -36,7 +38,7 @@ public class CategoryService(
+ 
+     public async Task<ServiceResult<CategoryWithProductsDto?>> GetCategoryWithProductsAsync(Guid id, CancellationToken cancellationToken = default)
+     {
+-        var category = await context.Categories.AsNoTracking().Include(x => x.Products).FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
++        var category = await categoryRepository.GetCategoryWithProductsAsync(id, cancellationToken);
+         if (category is null)
+         {
+             return ServiceResult<CategoryWithProductsDto?>.Fail("Kategori bulunamadı.", HttpStatusCode.NotFound);
+@@ -48,15 +50,15 @@ public class CategoryService(
+ 
+     public async Task<ServiceResult<CreateCategoryResponse>> CreateAsync(CreateCategoryRequest request, CancellationToken cancellationToken = default)
+     {
+-        var anyCategory = await context.Categories.AnyAsync(x => x.Name == request.Name, cancellationToken);
++        var anyCategory = await categoryRepository.AnyAsync(x => x.Name == request.Name, cancellationToken);
+         if (anyCategory)
+         {
+             return ServiceResult<CreateCategoryResponse>.Fail("Kategori ismi veritabanında bulunmaktadır.", HttpStatusCode.BadRequest);
+         }
+ 
+         var category = mapper.Map<Category>(request);
+-        context.Categories.Add(category);
+-        await context.SaveChangesAsync(cancellationToken);
++        await categoryRepository.AddAsync(category, cancellationToken);
++        await unitOfWork.SaveChangesAsync(cancellationToken);
+ 
+         return ServiceResult<CreateCategoryResponse>.SuccessAsCreated(
+             new CreateCategoryResponse(category.Id),
+@@ -65,41 +67,42 @@ public class CategoryService(
+ 
+     public async Task<ServiceResult> UpdateAsync(Guid id, UpdateCategoryRequest request, CancellationToken cancellationToken = default)
+     {
+-        var category = await context.Categories.FindAsync([id], cancellationToken);
++        var category = await categoryRepository.GetByIdAsync(id, cancellationToken);
+         if (category is null)
+         {
+             return ServiceResult.Fail("Kategori bulunamadı.", HttpStatusCode.NotFound);
+         }
+ 
+-        var isCategoryNameExist = await context.Categories.AnyAsync(x => x.Name == request.Name && x.Id != id, cancellationToken);
++        var isCategoryNameExist = await categoryRepository.AnyAsync(x => x.Name == request.Name && x.Id != id, cancellationToken);
+         if (isCategoryNameExist)
+         {
+             return ServiceResult.Fail("Kategori ismi veritabanında bulunmaktadır.", HttpStatusCode.BadRequest);
+         }
+ 
+         category = mapper.Map(request, category);
+-        context.Entry(category).Property(x => x.RowVersion).OriginalValue = request.RowVersion;
+-        await context.SaveChangesAsync(cancellationToken);
++        categoryRepository.SetOriginalRowVersion(category, request.RowVersion);
++        categoryRepository.Update(category);
++        await unitOfWork.SaveChangesAsync(cancellationToken);
+ 
+         return ServiceResult.Success(HttpStatusCode.NoContent);
+     }
+ 
+     public async Task<ServiceResult> DeleteAsync(Guid id, CancellationToken cancellationToken = default)
+     {
+-        var category = await context.Categories.FindAsync([id], cancellationToken);
++        var category = await categoryRepository.GetByIdAsync(id, cancellationToken);
+         if (category is null)
+         {
+             return ServiceResult.Fail("Kategori bulunamadı.", HttpStatusCode.NotFound);
+         }
+ 
+-        var hasProducts = await context.Products.AnyAsync(x => x.CategoryId == id, cancellationToken);
++        var hasProducts = await productRepository.AnyAsync(x => x.CategoryId == id, cancellationToken);
+         if (hasProducts)
+         {
+             return ServiceResult.Fail("Kategoriye bağlı ürünler varken kategori silinemez.", HttpStatusCode.Conflict);
+         }
+ 
+-        context.Categories.Remove(category);
+-        await context.SaveChangesAsync(cancellationToken);
++        categoryRepository.Delete(category);
++        await unitOfWork.SaveChangesAsync(cancellationToken);
+ 
+         return ServiceResult.Success(HttpStatusCode.NoContent);
+     }
+diff --git a/ProjectApp.Services/Features/Products/IProductService.cs b/ProjectApp.Services/Features/Products/IProductService.cs
+index 9e992c2..2f2e576 100644
+--- a/ProjectApp.Services/Features/Products/IProductService.cs
++++ b/ProjectApp.Services/Features/Products/IProductService.cs
+@@ -7,6 +7,7 @@ namespace ProjectApp.Services.Features.Products;
+ 
+ public interface IProductService
+ {
++    Task<ServiceResult<List<ProductDto>>> GetTopPricedProductsWithDapperAsync(int count, CancellationToken cancellationToken = default);
+     Task<ServiceResult<ProductDto?>> GetByIdAsync(Guid id, CancellationToken cancellationToken = default);
+     Task<ServiceResult<List<ProductDto>>> GetAllListAsync(CancellationToken cancellationToken = default);
+     Task<ServiceResult<PagedResult<ProductDto>>> GetPagedAllListAsync(PagedRequest request, CancellationToken cancellationToken = default);
+diff --git a/ProjectApp.Services/Features/Products/ProductService.cs b/ProjectApp.Services/Features/Products/ProductService.cs
+index cfd6a13..68c2ee0 100644
+--- a/ProjectApp.Services/Features/Products/ProductService.cs
++++ b/ProjectApp.Services/Features/Products/ProductService.cs
+@@ -1,7 +1,4 @@
+ using System.Net;
+-using Mapster;
+-using MapsterMapper;
+-using Microsoft.EntityFrameworkCore;
+ using ProjectApp.Repositories;
+ using ProjectApp.Repositories.Categories;
+ using ProjectApp.Repositories.Products;
+@@ -9,23 +6,36 @@ using ProjectApp.Services.Common.Pagination;
+ using ProjectApp.Services.Features.Products.Create;
+ using ProjectApp.Services.Features.Products.Update;
+ using ProjectApp.Services.Features.Products.UpdateStock;
++using Mapster;
++using MapsterMapper;
++using Microsoft.EntityFrameworkCore;
+ 
+ namespace ProjectApp.Services.Features.Products;
+ 
+ public class ProductService(
+-    AppDbContext context,
++    IProductRepository productRepository,
++    ICategoryRepository categoryRepository,
++    IUnitOfWork unitOfWork,
+     IMapper mapper) : IProductService
+ {
++    public async Task<ServiceResult<List<ProductDto>>> GetTopPricedProductsWithDapperAsync(int count, CancellationToken cancellationToken = default)
++    {
++        var products = await productRepository.GetTopPricedProductsWithDapperAsync(count, cancellationToken);
++        var productsAsDto = mapper.Map<List<ProductDto>>(products);
++
++        return ServiceResult<List<ProductDto>>.Success(productsAsDto);
++    }
++
+     public async Task<ServiceResult<List<ProductDto>>> GetAllListAsync(CancellationToken cancellationToken = default)
+     {
+-        var productsAsDto = await context.Products.AsNoTracking().ProjectToType<ProductDto>().ToListAsync(cancellationToken);
++        var productsAsDto = await productRepository.GetAll().ProjectToType<ProductDto>().ToListAsync(cancellationToken);
+ 
+         return ServiceResult<List<ProductDto>>.Success(productsAsDto);
+     }
+ 
+     public async Task<ServiceResult<PagedResult<ProductDto>>> GetPagedAllListAsync(PagedRequest request, CancellationToken cancellationToken = default)
+     {
+-        var query = context.Products.AsNoTracking().OrderBy(x => x.Created).ThenBy(x => x.Id).ProjectToType<ProductDto>(); // Guid v7 SQL Server'da kronolojik sıralanmaz
++        var query = productRepository.GetAll().OrderBy(x => x.Created).ThenBy(x => x.Id).ProjectToType<ProductDto>(); // Guid v7 SQL Server'da kronolojik sıralanmaz
+         var pagedResult = await query.ToPagedResultAsync(request, cancellationToken);
+ 
+         return ServiceResult<PagedResult<ProductDto>>.Success(pagedResult);
+@@ -33,7 +43,7 @@ public class ProductService(
+ 
+     public async Task<ServiceResult<ProductDto?>> GetByIdAsync(Guid id, CancellationToken cancellationToken = default)
+     {
+-        var product = await context.Products.FindAsync([id], cancellationToken);
++        var product = await productRepository.GetByIdAsync(id, cancellationToken);
+         if (product is null)
+         {
+             return ServiceResult<ProductDto?>.Fail("Ürün bulunamadı.", HttpStatusCode.NotFound);
+@@ -45,21 +55,21 @@ public class ProductService(
+ 
+     public async Task<ServiceResult<CreateProductResponse>> CreateAsync(CreateProductRequest request, CancellationToken cancellationToken = default)
+     {
+-        var anyProduct = await context.Products.AnyAsync(x => x.Name == request.Name, cancellationToken);
++        var anyProduct = await productRepository.AnyAsync(x => x.Name == request.Name, cancellationToken);
+         if (anyProduct)
+         {
+             return ServiceResult<CreateProductResponse>.Fail("Ürün ismi veritabanında bulunmaktadır.", HttpStatusCode.BadRequest);
+         }
+ 
+-        var categoryExists = await context.Categories.AnyAsync(x => x.Id == request.CategoryId, cancellationToken);
++        var categoryExists = await categoryRepository.AnyAsync(request.CategoryId, cancellationToken);
+         if (!categoryExists)
+         {
+             return ServiceResult<CreateProductResponse>.Fail("Belirtilen kategori bulunamadı.", HttpStatusCode.BadRequest);
+         }
+ 
+         var product = mapper.Map<Product>(request);
+-        context.Products.Add(product);
+-        await context.SaveChangesAsync(cancellationToken);
++        await productRepository.AddAsync(product, cancellationToken);
++        await unitOfWork.SaveChangesAsync(cancellationToken);
+ 
+         return ServiceResult<CreateProductResponse>.SuccessAsCreated(
+             new CreateProductResponse(product.Id),
+@@ -68,34 +78,35 @@ public class ProductService(
+ 
+     public async Task<ServiceResult> UpdateAsync(Guid id, UpdateProductRequest request, CancellationToken cancellationToken = default)
+     {
+-        var product = await context.Products.FindAsync([id], cancellationToken);
++        var product = await productRepository.GetByIdAsync(id, cancellationToken);
+         if (product is null)
+         {
+             return ServiceResult.Fail("Ürün bulunamadı.", HttpStatusCode.NotFound);
+         }
+ 
+-        var isProductNameExist = await context.Products.AnyAsync(x => x.Name == request.Name && x.Id != id, cancellationToken);
++        var isProductNameExist = await productRepository.AnyAsync(x => x.Name == request.Name && x.Id != id, cancellationToken);
+         if (isProductNameExist)
+         {
+             return ServiceResult.Fail("Ürün ismi veritabanında bulunmaktadır.", HttpStatusCode.BadRequest);
+         }
+ 
+-        var categoryExists = await context.Categories.AnyAsync(x => x.Id == request.CategoryId, cancellationToken);
++        var categoryExists = await categoryRepository.AnyAsync(request.CategoryId, cancellationToken);
+         if (!categoryExists)
+         {
+             return ServiceResult.Fail("Belirtilen kategori bulunamadı.", HttpStatusCode.BadRequest);
+         }
+ 
+         product = mapper.Map(request, product);
+-        context.Entry(product).Property(x => x.RowVersion).OriginalValue = request.RowVersion;
+-        await context.SaveChangesAsync(cancellationToken);
++        productRepository.SetOriginalRowVersion(product, request.RowVersion);
++        productRepository.Update(product);
++        await unitOfWork.SaveChangesAsync(cancellationToken);
+ 
+         return ServiceResult.Success(HttpStatusCode.NoContent);
+     }
+ 
+     public async Task<ServiceResult> UpdateStockAsync(UpdateProductStockRequest request, CancellationToken cancellationToken = default)
+     {
+-        var product = await context.Products.FindAsync([request.ProductId], cancellationToken);
++        var product = await productRepository.GetByIdAsync(request.ProductId, cancellationToken);
+         if (product is null)
+         {
+             return ServiceResult.Fail("Ürün bulunamadı.", HttpStatusCode.NotFound);
+@@ -103,22 +114,23 @@ public class ProductService(
+ 
+         product.Stock = request.Quantity;
+         // Eşzamanlı iki stok yazımında son yazanın sessizce kazanmasını önler: istemcinin gördüğü sürüm esas alınır (409).
+-        context.Entry(product).Property(x => x.RowVersion).OriginalValue = request.RowVersion;
+-        await context.SaveChangesAsync(cancellationToken);
++        productRepository.SetOriginalRowVersion(product, request.RowVersion);
++        productRepository.Update(product);
++        await unitOfWork.SaveChangesAsync(cancellationToken);
+ 
+         return ServiceResult.Success(HttpStatusCode.NoContent);
+     }
+ 
+     public async Task<ServiceResult> DeleteAsync(Guid id, CancellationToken cancellationToken = default)
+     {
+-        var product = await context.Products.FindAsync([id], cancellationToken);
++        var product = await productRepository.GetByIdAsync(id, cancellationToken);
+         if (product is null)
+         {
+             return ServiceResult.Fail("Ürün bulunamadı.", HttpStatusCode.NotFound);
+         }
+ 
+-        context.Products.Remove(product);
+-        await context.SaveChangesAsync(cancellationToken);
++        productRepository.Delete(product);
++        await unitOfWork.SaveChangesAsync(cancellationToken);
+ 
+         return ServiceResult.Success(HttpStatusCode.NoContent);
+     }
+diff --git a/tests/ProjectApp.UnitTests/CategoryServiceTests.cs b/tests/ProjectApp.UnitTests/CategoryServiceTests.cs
+index df5447e..c989b04 100644
+--- a/tests/ProjectApp.UnitTests/CategoryServiceTests.cs
++++ b/tests/ProjectApp.UnitTests/CategoryServiceTests.cs
+@@ -1,6 +1,8 @@
++using System.Linq.Expressions;
+ using System.Net;
+ using Mapster;
+ using MapsterMapper;
++using NSubstitute;
+ using ProjectApp.Repositories;
+ using ProjectApp.Repositories.Categories;
+ using ProjectApp.Repositories.Products;
+@@ -9,45 +11,40 @@ using ProjectApp.Services.Features.Categories;
+ 
+ namespace ProjectApp.UnitTests;
+ 
+-public sealed class CategoryServiceTests : IDisposable
++public class CategoryServiceTests
+ {
+-    private readonly AppDbContext _context;
++    private readonly ICategoryRepository _categoryRepository = Substitute.For<ICategoryRepository>();
++    private readonly IProductRepository _productRepository = Substitute.For<IProductRepository>();
++    private readonly IUnitOfWork _unitOfWork = Substitute.For<IUnitOfWork>();
+     private readonly CategoryService _sut;
+ 
+     public CategoryServiceTests()
+     {
+-        _context = TestDb.Create();
+-
+         var config = new TypeAdapterConfig();
+         config.Scan(typeof(ServiceAssembly).Assembly);
+ 
+-        _sut = new CategoryService(_context, new Mapper(config));
+-    }
+-
+-    public void Dispose()
+-    {
+-        _context.Dispose();
++        _sut = new CategoryService(_categoryRepository, _productRepository, _unitOfWork, new Mapper(config));
+     }
+ 
+     [Fact]
+     public async Task DeleteAsync_UrunuOlanKategori_409Doner()
+     {
+         var category = new Category { Name = "Kırtasiye" };
+-        var product = new Product { Name = "Kalem", Price = 10, Stock = 5, Category = category };
+-        _context.Categories.Add(category);
+-        _context.Products.Add(product);
+-        await _context.SaveChangesAsync(TestContext.Current.CancellationToken);
++        _categoryRepository.GetByIdAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>()).Returns(category);
++        _productRepository.AnyAsync(Arg.Any<Expression<Func<Product, bool>>>(), Arg.Any<CancellationToken>()).Returns(true);
+ 
+-        var result = await _sut.DeleteAsync(category.Id, TestContext.Current.CancellationToken);
++        var result = await _sut.DeleteAsync(Guid.NewGuid(), TestContext.Current.CancellationToken);
+ 
+         Assert.True(result.IsFail);
+         Assert.Equal(HttpStatusCode.Conflict, result.Status);
+-        Assert.NotNull(await _context.Categories.FindAsync([category.Id], TestContext.Current.CancellationToken));
++        _categoryRepository.DidNotReceive().Delete(Arg.Any<Category>());
+     }
+ 
+     [Fact]
+     public async Task DeleteAsync_KategoriYoksa_404Doner()
+     {
++        _categoryRepository.GetByIdAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>()).Returns((Category?)null);
++
+         var result = await _sut.DeleteAsync(Guid.NewGuid(), TestContext.Current.CancellationToken);
+ 
+         Assert.Equal(HttpStatusCode.NotFound, result.Status);
+@@ -56,14 +53,14 @@ public sealed class CategoryServiceTests : IDisposable
+     [Fact]
+     public async Task DeleteAsync_UrunuOlmayanKategori_204DonerVeSiler()
+     {
+-        var category = new Category { Name = "Boş" };
+-        _context.Categories.Add(category);
+-        await _context.SaveChangesAsync(TestContext.Current.CancellationToken);
++        _categoryRepository.GetByIdAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>()).Returns(new Category { Name = "Boş" });
++        _productRepository.AnyAsync(Arg.Any<Expression<Func<Product, bool>>>(), Arg.Any<CancellationToken>()).Returns(false);
+ 
+-        var result = await _sut.DeleteAsync(category.Id, TestContext.Current.CancellationToken);
++        var result = await _sut.DeleteAsync(Guid.NewGuid(), TestContext.Current.CancellationToken);
+ 
+         Assert.True(result.IsSuccess);
+         Assert.Equal(HttpStatusCode.NoContent, result.Status);
+-        Assert.Null(await _context.Categories.FindAsync([category.Id], TestContext.Current.CancellationToken));
++        _categoryRepository.Received(1).Delete(Arg.Any<Category>());
++        await _unitOfWork.Received(1).SaveChangesAsync(Arg.Any<CancellationToken>());
+     }
+ }
+diff --git a/tests/ProjectApp.UnitTests/ProductServiceTests.cs b/tests/ProjectApp.UnitTests/ProductServiceTests.cs
+index a964667..990a5d1 100644
+--- a/tests/ProjectApp.UnitTests/ProductServiceTests.cs
++++ b/tests/ProjectApp.UnitTests/ProductServiceTests.cs
+@@ -1,7 +1,8 @@
++using System.Linq.Expressions;
+ using System.Net;
+ using Mapster;
+ using MapsterMapper;
+-using Microsoft.EntityFrameworkCore;
++using NSubstitute;
+ using ProjectApp.Repositories;
+ using ProjectApp.Repositories.Categories;
+ using ProjectApp.Repositories.Products;
+@@ -13,138 +14,89 @@ using ProjectApp.Services.Features.Products.UpdateStock;
+ 
+ namespace ProjectApp.UnitTests;
+ 
+-public sealed class ProductServiceTests : IDisposable
++public class ProductServiceTests
+ {
+-    private readonly AppDbContext _context;
++    private readonly IProductRepository _productRepository = Substitute.For<IProductRepository>();
++    private readonly ICategoryRepository _categoryRepository = Substitute.For<ICategoryRepository>();
++    private readonly IUnitOfWork _unitOfWork = Substitute.For<IUnitOfWork>();
+     private readonly ProductService _sut;
+ 
+     public ProductServiceTests()
+     {
+-        _context = TestDb.Create();
+-
+         var config = new TypeAdapterConfig();
+         config.Scan(typeof(ServiceAssembly).Assembly);
+ 
+-        _sut = new ProductService(_context, new Mapper(config));
+-    }
+-
+-    public void Dispose()
+-    {
+-        _context.Dispose();
++        _sut = new ProductService(_productRepository, _categoryRepository, _unitOfWork, new Mapper(config));
+     }
+ 
+     [Fact]
+     public async Task CreateAsync_KategoriYoksa_400Doner()
+     {
++        _productRepository.AnyAsync(Arg.Any<Expression<Func<Product, bool>>>(), Arg.Any<CancellationToken>()).Returns(false);
++        _categoryRepository.AnyAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>()).Returns(false);
++
+         var result = await _sut.CreateAsync(new CreateProductRequest("Kalem", 10, 5, Guid.NewGuid()), TestContext.Current.CancellationToken);
+ 
+         Assert.True(result.IsFail);
+         Assert.Equal(HttpStatusCode.BadRequest, result.Status);
+-        Assert.Empty(_context.Products);
++        await _unitOfWork.DidNotReceive().SaveChangesAsync(Arg.Any<CancellationToken>());
+     }
+ 
+     [Fact]
+     public async Task CreateAsync_IsimZatenVarsa_400Doner()
+     {
+-        var category = new Category { Name = "Kırtasiye" };
+-        var product = new Product { Name = "Kalem", Price = 10, Stock = 5, Category = category };
+-        _context.Categories.Add(category);
+-        _context.Products.Add(product);
+-        await _context.SaveChangesAsync(TestContext.Current.CancellationToken);
++        _productRepository.AnyAsync(Arg.Any<Expression<Func<Product, bool>>>(), Arg.Any<CancellationToken>()).Returns(true);
+ 
+-        var result = await _sut.CreateAsync(new CreateProductRequest("Kalem", 10, 5, category.Id), TestContext.Current.CancellationToken);
++        var result = await _sut.CreateAsync(new CreateProductRequest("Kalem", 10, 5, Guid.NewGuid()), TestContext.Current.CancellationToken);
+ 
+         Assert.True(result.IsFail);
+         Assert.Equal(HttpStatusCode.BadRequest, result.Status);
++        await _productRepository.DidNotReceive().AddAsync(Arg.Any<Product>(), Arg.Any<CancellationToken>());
+     }
+ 
+     [Fact]
+     public async Task CreateAsync_Basarili_201DonerVeKaydeder()
+     {
+-        var category = new Category { Name = "Kırtasiye" };
+-        _context.Categories.Add(category);
+-        await _context.SaveChangesAsync(TestContext.Current.CancellationToken);
++        _productRepository.AnyAsync(Arg.Any<Expression<Func<Product, bool>>>(), Arg.Any<CancellationToken>()).Returns(false);
++        _categoryRepository.AnyAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>()).Returns(true);
+ 
+-        var result = await _sut.CreateAsync(new CreateProductRequest("Kalem", 10, 5, category.Id), TestContext.Current.CancellationToken);
++        var result = await _sut.CreateAsync(new CreateProductRequest("Kalem", 10, 5, Guid.NewGuid()), TestContext.Current.CancellationToken);
+ 
+         Assert.True(result.IsSuccess);
+         Assert.Equal(HttpStatusCode.Created, result.Status);
+-        Assert.Single(_context.Products);
++        await _productRepository.Received(1).AddAsync(Arg.Any<Product>(), Arg.Any<CancellationToken>());
++        await _unitOfWork.Received(1).SaveChangesAsync(Arg.Any<CancellationToken>());
+     }
+ 
+     [Fact]
+     public async Task UpdateAsync_IstemcininRowVersionuOrijinalDegerOlarakAyarlanir()
+     {
+-        var category = new Category { Name = "Kırtasiye" };
++        var product = new Product { Name = "Kalem", Price = 10, Stock = 5, CategoryId = Guid.NewGuid() };
++        _productRepository.GetByIdAsync(product.Id, Arg.Any<CancellationToken>()).Returns(new ValueTask<Product?>(product));
++        _productRepository.AnyAsync(Arg.Any<Expression<Func<Product, bool>>>(), Arg.Any<CancellationToken>()).Returns(false);
++        _categoryRepository.AnyAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>()).Returns(true);
+         var rowVersion = new byte[] { 1, 2, 3, 4, 5, 6, 7, 8 };
+-        var product = new Product { Name = "Kalem", Price = 10, Stock = 5, Category = category, RowVersion = rowVersion };
+-        _context.Categories.Add(category);
+-        _context.Products.Add(product);
+-        await _context.SaveChangesAsync(TestContext.Current.CancellationToken);
+-        _context.ChangeTracker.Clear();
+ 
+-        var result = await _sut.UpdateAsync(product.Id, new UpdateProductRequest("Kursun Kalem", 12, 6, category.Id, rowVersion), TestContext.Current.CancellationToken);
++        var result = await _sut.UpdateAsync(product.Id, new UpdateProductRequest("Kursun Kalem", 12, 6, product.CategoryId, rowVersion), TestContext.Current.CancellationToken);
+ 
+         Assert.Equal(HttpStatusCode.NoContent, result.Status);
+-        var updatedProduct = await _context.Products.FindAsync([product.Id], TestContext.Current.CancellationToken);
+-        Assert.NotNull(updatedProduct);
+-        Assert.Equal("Kursun Kalem", updatedProduct.Name);
+-    }
+-
+-    [Fact]
+-    public async Task UpdateAsync_FarkliRowVersion_DbUpdateConcurrencyExceptionFirlatir()
+-    {
+-        var category = new Category { Name = "Kırtasiye" };
+-        var dbRowVersion = new byte[] { 1, 2, 3, 4, 5, 6, 7, 8 };
+-        var product = new Product { Name = "Kalem", Price = 10, Stock = 5, Category = category, RowVersion = dbRowVersion };
+-        _context.Categories.Add(category);
+-        _context.Products.Add(product);
+-        await _context.SaveChangesAsync(TestContext.Current.CancellationToken);
+-        _context.ChangeTracker.Clear();
+-
+-        var clientRowVersion = new byte[] { 8, 7, 6, 5, 4, 3, 2, 1 };
+-        var request = new UpdateProductRequest("Kursun Kalem", 12, 6, category.Id, clientRowVersion);
+-
+-        await Assert.ThrowsAsync<DbUpdateConcurrencyException>(() =>
+-            _sut.UpdateAsync(product.Id, request, TestContext.Current.CancellationToken));
++        _productRepository.Received(1).SetOriginalRowVersion(product, rowVersion);
+     }
+ 
+     [Fact]
+     public async Task UpdateStockAsync_IstemcininRowVersionuOrijinalDegerOlarakAyarlanir()
+     {
+-        var category = new Category { Name = "Kırtasiye" };
+-        var rowVersion = new byte[] { 1, 2, 3, 4, 5, 6, 7, 8 };
+-        var product = new Product { Name = "Kalem", Price = 10, Stock = 5, Category = category, RowVersion = rowVersion };
+-        _context.Categories.Add(category);
+-        _context.Products.Add(product);
+-        await _context.SaveChangesAsync(TestContext.Current.CancellationToken);
+-        _context.ChangeTracker.Clear();
++        // Eşzamanlı stok yazımında kayıp güncellemeyi önlemek için istemcinin gördüğü sürüm esas alınmalı (aksi halde 409 yerine son yazan kazanır).
++        var product = new Product { Name = "Kalem", Price = 10, Stock = 5, CategoryId = Guid.NewGuid() };
++        _productRepository.GetByIdAsync(product.Id, Arg.Any<CancellationToken>()).Returns(new ValueTask<Product?>(product));
++        var rowVersion = new byte[] { 8, 7, 6, 5, 4, 3, 2, 1 };
+ 
+         var result = await _sut.UpdateStockAsync(
+             new UpdateProductStockRequest(product.Id, 7, rowVersion),
+             TestContext.Current.CancellationToken);
+ 
+         Assert.Equal(HttpStatusCode.NoContent, result.Status);
+-        var updatedProduct = await _context.Products.FindAsync([product.Id], TestContext.Current.CancellationToken);
+-        Assert.NotNull(updatedProduct);
+-        Assert.Equal(7, updatedProduct.Stock);
+-    }
+-
+-    [Fact]
+-    public async Task UpdateStockAsync_FarkliRowVersion_DbUpdateConcurrencyExceptionFirlatir()
+-    {
+-        var category = new Category { Name = "Kırtasiye" };
+-        var dbRowVersion = new byte[] { 1, 2, 3, 4, 5, 6, 7, 8 };
+-        var product = new Product { Name = "Kalem", Price = 10, Stock = 5, Category = category, RowVersion = dbRowVersion };
+-        _context.Categories.Add(category);
+-        _context.Products.Add(product);
+-        await _context.SaveChangesAsync(TestContext.Current.CancellationToken);
+-        _context.ChangeTracker.Clear();
+-
+-        var clientRowVersion = new byte[] { 8, 7, 6, 5, 4, 3, 2, 1 };
+-        var request = new UpdateProductStockRequest(product.Id, 7, clientRowVersion);
+-
+-        await Assert.ThrowsAsync<DbUpdateConcurrencyException>(() =>
+-            _sut.UpdateStockAsync(request, TestContext.Current.CancellationToken));
++        Assert.Equal(7, product.Stock);
++        _productRepository.Received(1).SetOriginalRowVersion(product, rowVersion);
+     }
+ }
+diff --git a/tests/ProjectApp.UnitTests/ProjectApp.UnitTests.csproj b/tests/ProjectApp.UnitTests/ProjectApp.UnitTests.csproj
+index e77b0f5..26a1d13 100644
+--- a/tests/ProjectApp.UnitTests/ProjectApp.UnitTests.csproj
++++ b/tests/ProjectApp.UnitTests/ProjectApp.UnitTests.csproj
+@@ -7,7 +7,6 @@
+ 
+   <ItemGroup>
+     <PackageReference Include="coverlet.collector" />
+-    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" />
+     <PackageReference Include="Microsoft.NET.Test.Sdk" />
+     <PackageReference Include="NSubstitute" />
+     <PackageReference Include="xunit.v3" />

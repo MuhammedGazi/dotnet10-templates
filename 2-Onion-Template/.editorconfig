@@ -1,0 +1,28 @@
+root = true
+
+[*.cs]
+# Kod analizi (AnalysisLevel = latest-recommended) için template genelindeki bilinçli tercihler.
+
+# CA1848/CA1873: LoggerMessage kaynak üreticisi önerisi. Yüksek trafikli loglarda [LoggerMessage] tercih edin;
+# template'te okunabilirlik için öneri (suggestion) seviyesinde bırakıldı.
+dotnet_diagnostic.CA1848.severity = suggestion
+dotnet_diagnostic.CA1873.severity = suggestion
+
+# CA1000: ServiceResult<T>.Success/Fail bilinçli statik fabrika metotlarıdır.
+dotnet_diagnostic.CA1000.severity = none
+
+# CA1711: IEventHandler / InMemoryMessageQueue gibi adlar alan diline uygundur.
+dotnet_diagnostic.CA1711.severity = none
+
+# CA1707: 'dotnet new -n "Şirket Proje"' veya '-n my-shop' gibi adlar ad alanına alt çizgiyle dönüşür
+# (Sirket_Proje, my_shop); bu uyarı üretilen her dosyada tekrarlanıp "0 uyarı" hedefini bozuyordu.
+dotnet_diagnostic.CA1707.severity = none
+
+[tests/**.cs]
+# Test adlarında alt çizgi (Metot_Durum_Sonuc) okunabilirlik için kullanılır.
+dotnet_diagnostic.CA1707.severity = none
+# CA2012: NSubstitute'ta ValueTask dönen metotlar için .Returns(...) kurulumu bilinçlidir.
+dotnet_diagnostic.CA2012.severity = none
+
+[**/Migrations/*.cs]
+generated_code = true

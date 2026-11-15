@@ -1,0 +1,378 @@
+diff --git a/AGENTS.md b/AGENTS.md
+index cc447d5..8d2dd50 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -3,8 +3,8 @@
+ Ayrıntı için önce `README.md`, sonra `docs/AI_WORKFLOW.md`, `docs/wiki/index.md` ve `recipes/README.md` okunur. Kod/identifier İngilizce; yorum ve kullanıcı mesajları Türkçe.
+ 
+ ## Seviye
+-- Proje **S4 (Ürün)** seviyesindedir. Projenin gerçek seviyesi `CLAUDE.md` "Seviye" bölümündedir.
+-- Seviyenin üstündeki özellik (önbellek, çok kiracılık, Dapper) **eklenmez**; gerekiyorsa `recipes/` altındaki reçete önerilir ve kullanıcıya sorulur.
++- Proje **S5 (Ölçekli ürün)** seviyesindedir. Projenin gerçek seviyesi `CLAUDE.md` "Seviye" bölümündedir.
++- Seviyenin üstündeki özellik (Redis/HybridCache, outbox, çok kiracılık, OpenTelemetry — ölçülmüş ihtiyaç olmadan; S5 notları —, Dapper) **eklenmez**; mimari karar ve kullanıcı onayı gerekir.
+ - Kodda olmayan bir özelliği "en iyi uygulama" diye geri ekleme.
+ 
+ ## Katmanlar (bağımlılık yönü içe doğru)
+@@ -27,7 +27,7 @@ Ayrıntı için önce `README.md`, sonra `docs/AI_WORKFLOW.md`, `docs/wiki/index
+ 2. Olay gerekiyorsa `IEvent` + `IEventHandler`, handler `Infrastructure/Messaging/Consumers`.
+ 3. `I<Entity>Repository` (Application) + repository (Infrastructure/Persistence) + `ServiceRegistration` kaydı; `DbSet` ekle.
+ 4. Request/Dto `record`, validator, `IRegister` mapping (Application).
+-5. `I<Entity>Service` + servis + `AddApplicationServices` kaydı; controller.
++5. `I<Entity>Service` + servis + `AddApplicationServices` kaydı; controller; liste/okuma önbelleğe alınacaksa `CacheKeys`'e anahtar + yazma yollarında geçersizleştirme (`Invalidate*Async`).
+ 6. Unit + entegrasyon testi; migration üret; README/wiki/log güncelle.
+ 
+ ## Doğrulama
+diff --git a/CLAUDE.md b/CLAUDE.md
+index c80c32e..9f2df76 100644
+--- a/CLAUDE.md
++++ b/CLAUDE.md
+@@ -8,8 +8,8 @@ Ayrıntı ve okuma sırası: `README.md` → `docs/AI_WORKFLOW.md` → `docs/SYS
+ 
+ ## Seviye
+ <!-- Bu bölümü proje başında doldurun (seviye tanımları: şablon deposundaki docs/SEVIYE_TANIMLARI.md); doldurulana kadar şablon varsayılanı geçerlidir. -->
+-Seviye: S4 (Onion) · Risk: yok (şablon varsayılanı, henüz görüşme yapılmadı)
++Seviye: S5 (Onion) · Risk: yok (şablon varsayılanı, henüz görüşme yapılmadı)
+ Kapsam: <müşterinin asıl ihtiyacı>
+ İşin ihtiyaçları: e-posta bildirimi · içerik/görsel yükleme · deploy · yedek · spam koruması (her biri: var/yok/çözüm)
+-Yapmayacaklarımız: önbellek (S5), Redis/outbox (S5 notları, ölçülmüş ihtiyaç olmadan) · çok kiracılık (şablonda yok; proje kararı) · Dapper (arşiv)
+-Seviye atlama: `recipes/` altındaki reçeteyle; sıfırdan yazılmaz.
++Yapmayacaklarımız: Redis/outbox/OpenTelemetry (ölçülmüş ihtiyaç olmadan) · çok kiracılık (şablonda yok; proje kararı) · Dapper (arşiv)
++Seviye atlama: S5 en üst şablon seviyesidir; ötesi reçete değil mimari karardır.
+diff --git a/Core/ProjectApp.Application/Features/Categories/CategoryService.cs b/Core/ProjectApp.Application/Features/Categories/CategoryService.cs
+index 6fa0d1f..84f1ee6 100644
+--- a/Core/ProjectApp.Application/Features/Categories/CategoryService.cs
++++ b/Core/ProjectApp.Application/Features/Categories/CategoryService.cs
+@@ -1,5 +1,7 @@
+ using System.Net;
++using ProjectApp.Application.Common;
+ using ProjectApp.Application.Common.Wrappers;
++using ProjectApp.Application.Contracts.Caching;
+ using ProjectApp.Application.Contracts.Persistence;
+ using ProjectApp.Application.Features.Categories.Create;
+ using ProjectApp.Application.Features.Categories.Dto;
+@@ -12,6 +14,7 @@ namespace ProjectApp.Application.Features.Categories;
+ public class CategoryService(
+     ICategoryRepository categoryRepository,
+     IProductRepository productRepository,
++    ICacheService cacheService,
+     IUnitOfWork unitOfWork,
+     IMapper mapper) : ICategoryService
+ {
+@@ -80,6 +83,10 @@ public class CategoryService(
+         categoryRepository.SetOriginalRowVersion(category, request.RowVersion);
+         await unitOfWork.SaveChangesAsync(cancellationToken);
+ 
++        // Ürün listesi cache'i kategoriye göre değişmese de, ileride ProductDto'ya kategori bilgisi eklenirse bayat
++        // veri kalmaması için kategori değişikliğinde de temizlenir (bilinçli tercih). Commit sonrası: iptal edilmemeli.
++        await cacheService.InvalidateProductsAsync();
++
+         return ServiceResult.Success(HttpStatusCode.NoContent);
+     }
+ 
+@@ -100,6 +107,10 @@ public class CategoryService(
+         categoryRepository.Remove(category);
+         await unitOfWork.SaveChangesAsync(cancellationToken);
+ 
++        // Ürün listesi cache'i kategoriye göre değişmese de, ileride ProductDto'ya kategori bilgisi eklenirse bayat
++        // veri kalmaması için kategori değişikliğinde de temizlenir (bilinçli tercih). Commit sonrası: iptal edilmemeli.
++        await cacheService.InvalidateProductsAsync();
++
+         return ServiceResult.Success(HttpStatusCode.NoContent);
+     }
+ }
+diff --git a/Core/ProjectApp.Application/Features/Products/ProductService.cs b/Core/ProjectApp.Application/Features/Products/ProductService.cs
+index fc3af12..7f52e89 100644
+--- a/Core/ProjectApp.Application/Features/Products/ProductService.cs
++++ b/Core/ProjectApp.Application/Features/Products/ProductService.cs
+@@ -1,6 +1,8 @@
+ using System.Net;
++using ProjectApp.Application.Common;
+ using ProjectApp.Application.Common.Parameters;
+ using ProjectApp.Application.Common.Wrappers;
++using ProjectApp.Application.Contracts.Caching;
+ using ProjectApp.Application.Contracts.Infrastructure;
+ using ProjectApp.Application.Contracts.Persistence;
+ using ProjectApp.Application.Features.Products.Create;
+@@ -18,12 +20,19 @@ public class ProductService(
+     ICategoryRepository categoryRepository,
+     IUnitOfWork unitOfWork,
+     IMapper mapper,
++    ICacheService cacheService,
+     IServiceBus serviceBus) : IProductService
+ {
++    private const string ProductsCacheKey = CacheKeys.Products;
++
+     public async Task<ServiceResult<List<ProductDto>>> GetAllListAsync(CancellationToken cancellationToken = default)
+     {
+-        var products = await productRepository.GetAllAsync(cancellationToken);
+-        var productDtos = mapper.Map<List<ProductDto>>(products);
++        // GetOrCreateAsync: önbellek boşken gelen eşzamanlı isteklerde tablo yalnızca bir kez okunur.
++        var productDtos = await cacheService.GetOrCreateAsync(
++            ProductsCacheKey,
++            async ct => mapper.Map<List<ProductDto>>(await productRepository.GetAllAsync(ct)),
++            TimeSpan.FromMinutes(5),
++            cancellationToken);
+ 
+         return ServiceResult<List<ProductDto>>.Success(productDtos);
+     }
+@@ -68,6 +77,8 @@ public class ProductService(
+         productRepository.Add(product);
+         await unitOfWork.SaveChangesAsync(cancellationToken);
+ 
++        await cacheService.InvalidateProductsAsync(); // commit sonrası: iptal edilmemeli
++
+         // In-Memory kuyruk üzerinden ProductAddedEvent fırlatılır.
+         // Kayıt commit edildi; istek iptal edilse bile event yayımlanmalı (CancellationToken.None).
+         await serviceBus.PublishAsync(new ProductAddedEvent(product.Id, product.Name, product.Price, product.CategoryId), CancellationToken.None);
+@@ -103,6 +114,8 @@ public class ProductService(
+         productRepository.SetOriginalRowVersion(product, request.RowVersion);
+         await unitOfWork.SaveChangesAsync(cancellationToken);
+ 
++        await cacheService.InvalidateProductsAsync(); // commit sonrası: iptal edilmemeli
++
+         return ServiceResult.Success(HttpStatusCode.NoContent);
+     }
+ 
+@@ -119,6 +132,8 @@ public class ProductService(
+         productRepository.SetOriginalRowVersion(product, request.RowVersion);
+         await unitOfWork.SaveChangesAsync(cancellationToken);
+ 
++        await cacheService.InvalidateProductsAsync(); // commit sonrası: iptal edilmemeli
++
+         return ServiceResult.Success(HttpStatusCode.NoContent);
+     }
+ 
+@@ -133,6 +148,8 @@ public class ProductService(
+         productRepository.Remove(product);
+         await unitOfWork.SaveChangesAsync(cancellationToken);
+ 
++        await cacheService.InvalidateProductsAsync(); // commit sonrası: iptal edilmemeli
++
+         return ServiceResult.Success(HttpStatusCode.NoContent);
+     }
+ }
+diff --git a/Infrastructure/ProjectApp.Infrastructure/ServiceRegistration.cs b/Infrastructure/ProjectApp.Infrastructure/ServiceRegistration.cs
+index 25dfb12..baecece 100644
+--- a/Infrastructure/ProjectApp.Infrastructure/ServiceRegistration.cs
++++ b/Infrastructure/ProjectApp.Infrastructure/ServiceRegistration.cs
+@@ -6,7 +6,9 @@ using ProjectApp.Infrastructure.Persistence;
+ using ProjectApp.Infrastructure.Persistence.Context;
+ using ProjectApp.Infrastructure.Persistence.Interceptors;
+ using ProjectApp.Infrastructure.Persistence.Repositories;
++using ProjectApp.Application.Contracts.Caching;
+ using ProjectApp.Domain.Events;
++using ProjectApp.Infrastructure.Caching;
+ using ProjectApp.Infrastructure.Messaging;
+ using ProjectApp.Infrastructure.Messaging.Consumers;
+ using ProjectApp.Infrastructure.Services;
+@@ -78,6 +80,10 @@ public static class ServiceRegistration
+         services.AddScoped<ICategoryRepository, CategoryRepository>();
+         services.AddScoped<IUnitOfWork, UnitOfWork>();
+ 
++        // Önbellekleme (In-Memory Cache)
++        services.AddMemoryCache();
++        services.AddSingleton<ICacheService, CacheService>();
++
+         // Hafif In-Memory Kuyruk Sistemi (System.Threading.Channels)
+         services.AddSingleton<InMemoryMessageQueue>();
+         services.AddSingleton<IServiceBus, InMemoryServiceBus>();
+diff --git a/README.md b/README.md
+index b6e50d5..ce001df 100644
+--- a/README.md
++++ b/README.md
+@@ -4,7 +4,7 @@ Bu belge, **ProjectApp** çözümünde çalışan **Kıdemli Yazılımcılar (Se
+ 
+ > [!NOTE]
+ > ### 🏷️ Seviye
+-> Bu şablon **S4 (Ürün)** seviyesindedir. Domain event + süreç içi bus ve API versiyonlama mevcuttur; önbellek (S5) [`recipes/`](recipes/README.md) reçetesiyle eklenir. S1-S2 projeleri için `my-ntier` kullanılır. Kodda olmayan bir özelliği 'en iyi uygulama' diye ekleme. Ayrıntılar için [`recipes/README.md`](recipes/README.md) rehberine bakın.
++> Bu şablon **S5 (Ölçekli ürün)** seviyesindedir (en üst seviye). Domain event + süreç içi bus, API versiyonlama ve önbellek mevcuttur. S5'in ötesi (dağıtık önbellek/Redis, outbox, çok kiracılık, OpenTelemetry) reçete değil mimari karardır. S1-S2 projeleri için `my-ntier` kullanılır. Kodda olmayan bir özelliği 'en iyi uygulama' diye ekleme. Ayrıntılar için [`recipes/README.md`](recipes/README.md) rehberine bakın.
+ 
+ > [!IMPORTANT]
+ > ### 📚 Yapay Zeka Ajanları İçin Zorunlu Doküman Okuma Sırası (AI Reading Order)
+@@ -12,7 +12,7 @@ Bu belge, **ProjectApp** çözümünde çalışan **Kıdemli Yazılımcılar (Se
+ > 1. **Mimari Anayasa (Şu anki belge):** [`README.md`](./README.md) — 4 projeli Onion sınır kuralları, yasaklı paketler, `Feature-Service` & `ServiceResult<T>` standartları ve yeni özellik ekleme adımları.
+ > 2. **AI Geliştirme İş Akışı ve Wiki Kuralları:** [`docs/AI_WORKFLOW.md`](./docs/AI_WORKFLOW.md) — Proje Wiki sistemi ([`docs/wiki/index.md`](./docs/wiki/index.md) & [`docs/wiki/log.md`](./docs/wiki/log.md)), kod inceleme (Code Review), mantık hatası analizi, plan modu, doğrulama ve Türkçe commit disiplini.
+ > 3. **Kapsamlı Sistem Denetim Rehberi:** [`docs/SYSTEM_AUDIT.md`](./docs/SYSTEM_AUDIT.md) — Çoklu persona (Mimar, DevSecOps, QA, SRE) bakış açısıyla kod kalitesi, güvenlik ve performans denetim metodolojisi.
+-> 4. **Seviye Yükseltme Reçeteleri:** [`recipes/README.md`](recipes/README.md) — S4'ten S5'e (önbellek) geçiş ve opsiyonel Dapper tarifleri.
++> 4. **Reçeteler ve Mimari Notlar:** [`recipes/README.md`](recipes/README.md) — S5 tavanı mimari notları ve opsiyonel Dapper tarifleri.
+ 
+ ---
+ 
+@@ -95,11 +95,13 @@ ProjectApp.slnx
+ │   │
+ │   └── ProjectApp.Application/                      # [Uygulama İş Mantığı Katmanı - Application Layer]
+ │       ├── Common/
++│       │   ├── CacheKeys.cs                         # Önbellek anahtarları (Products, ProductById) ve InvalidateProductsAsync uzantısı
+ │       │   ├── Parameters/                          # PagedRequest (PageNumber ≤ 1.000.000, PageSize 1–100)
+ │       │   ├── Security/                            # RoleNames (Admin/User; WebAPI yetkilendirmesi ve Infrastructure ortak kullanır)
+ │       │   ├── Validation/                          # PasswordRules.StrongPassword() (tek kaynak şifre kuralı)
+ │       │   └── Wrappers/                            # ServiceResult, ServiceResult<T>, PagedResult<T>
+ │       ├── Contracts/
++│       │   ├── Caching/                             # ICacheService (GetOrCreateAsync, GetOrCreateOrNullAsync, GetAsync, RemoveAsync)
+ │       │   ├── Identity/                            # IAuthService, IUserService, ICurrentUserService
+ │       │   ├── Infrastructure/                      # IEmailService, IServiceBus, IEventHandler
+ │       │   └── Persistence/                         # IProductRepository, ICategoryRepository, IUnitOfWork
+@@ -112,6 +114,7 @@ ProjectApp.slnx
+ │
+ ├── Infrastructure/
+ │   └── ProjectApp.Infrastructure/                   # [Altyapı Katmanı: Veritabanı, EF Core, Identity ve Dış Servisler]
++│       ├── Caching/                                 # CacheService (IMemoryCache, 32 şeritli stampede koruması, negatif önbellek)
+ │       ├── Identity/
+ │       │   ├── AppRole.cs & AppUser.cs
+ │       │   ├── AuthService.cs                       # IAuthService implementasyonu
+@@ -133,7 +136,7 @@ ProjectApp.slnx
+ │       │   └── UnitOfWork.cs                        # IUnitOfWork implementasyonu
+ │       ├── Services/
+ │       │   └── EmailService.cs                      # IEmailService implementasyonu (e-posta gövdesi yalnızca Development'ta loglanır)
+-│       └── ServiceRegistration.cs                   # DbContext, IdentityCore, JWT, Messaging, Auth/User/Email servisleri, Repository DI kayıtları
++│       └── ServiceRegistration.cs                   # DbContext, IdentityCore, JWT, Caching, Messaging, Auth/User/Email servisleri, Repository DI kayıtları
+ │
+ ├── Presentation/
+ │   └── ProjectApp.WebAPI/                           # [Sunum Katmanı - Startup Project]
+@@ -189,8 +192,8 @@ flowchart TD
+ | Katman | Referans Verdiği Projeler | Sorumluluklar ve Kesin Sınır Kuralları |
+ | :--- | :--- | :--- |
+ | **`ProjectApp.Domain`** | **Hiçbir projeye veya NuGet paketine referans vermez!** | Saf C# varlıkları (`BaseEntity`, `AuditableEntity`, `Product`, `Category`), `IAuditEntity` sözleşmesi ve Domain Event'leri (`IEvent`, `IMessage`, `ProductAddedEvent`) bulunur. **Bu katmana asla EF Core, Identity veya HTTP paketi eklenmez.** |
+-| **`ProjectApp.Application`** | `ProjectApp.Domain` | İş mantığı (`ProductService`, `CategoryService`), tüm soyut sözleşmeler (`Contracts/*`: repository'ler, `IEmailService`, `IServiceBus`, `IEventHandler`), DTO/Request/Response modelleri, `FluentValidation` sınıfları, `Mapster` profilleri ve `ServiceResult<T>` bulunur. **Bu katmana asla `Microsoft.EntityFrameworkCore` veya `SqlServer` paketi eklenmez!** |
+-| **`ProjectApp.Infrastructure`** | `ProjectApp.Application` | `AppDbContext`, Identity servisleri (`AuthService`, `UserService`, `TokenService`, `JwtOption`), süreç içi Messaging altyapısı (`InMemoryServiceBus`, `InMemoryMessageQueue`, `InMemoryBusBackgroundService`, tüketiciler), repository'ler (`ProductRepository`, `CategoryRepository`), `UnitOfWork`, `AuditDbContextInterceptor`, `Migrations` ve `EmailService` içerir. |
++| **`ProjectApp.Application`** | `ProjectApp.Domain` | İş mantığı (`ProductService`, `CategoryService`), tüm soyut sözleşmeler (`Contracts/*`: repository'ler, `ICacheService`, `IEmailService`, `IServiceBus`, `IEventHandler`), DTO/Request/Response modelleri, `FluentValidation` sınıfları, `Mapster` profilleri, `CacheKeys` ve `ServiceResult<T>` bulunur. **Bu katmana asla `Microsoft.EntityFrameworkCore` veya `SqlServer` paketi eklenmez!** |
++| **`ProjectApp.Infrastructure`** | `ProjectApp.Application` | `AppDbContext`, önbellek servisi (`CacheService`), Identity servisleri (`AuthService`, `UserService`, `TokenService`, `JwtOption`), süreç içi Messaging altyapısı (`InMemoryServiceBus`, `InMemoryMessageQueue`, `InMemoryBusBackgroundService`, tüketiciler), repository'ler (`ProductRepository`, `CategoryRepository`), `UnitOfWork`, `AuditDbContextInterceptor`, `Migrations` ve `EmailService` içerir. |
+ | **`ProjectApp.WebAPI`** | `Application`, `Infrastructure` | Yalnızca `CustomBaseController` tabanlı Controller'lar, API versiyonlama (`VersioningExtensions`), Middleware/Pipeline eklentileri, `FluentValidationFilter`, exception handler'lar ve `CurrentUserService` içerir. |
+ 
+ ---
+@@ -445,10 +448,10 @@ Uygulama **`Development`** ortamında çalıştırıldığında `IdentityDataSee
+ 
+ ---
+ 
+-## 7. ⚡ Altyapı Özellikleri (Scalar UI, HealthChecks, Serilog, In-Memory Bus)
++## 7. ⚡ Altyapı Özellikleri (Scalar UI, HealthChecks, Serilog, In-Memory Bus, Önbellek)
+ 
+ > [!NOTE]
+-> Domain event altyapısı ve API versiyonlama S4 ile yerleşiktir; önbellek S5 reçetesiyle gelir (bkz. [`recipes/README.md`](recipes/README.md)).
++> Domain event altyapısı, API versiyonlama ve önbellek (IMemoryCache) şablonda yerleşiktir. S5'in ötesi (dağıtık önbellek/Redis, outbox, çok kiracılık, OpenTelemetry) reçete değil mimari karardır (bkz. [`recipes/README.md`](recipes/README.md)).
+ 
+ 1. **Scalar API Dokümantasyonu (`/scalar/v1`):**
+    - `Development` ortamında `/openapi/v1.json` ve **`/scalar/v1`** aktiftir. `/api/v1/auth/login` uç noktasından alınan `accessToken` değeri Scalar arayüzündeki **Bearer** alanına girilerek tüm uç noktalar test edilebilir.
+@@ -471,6 +474,14 @@ Uygulama **`Development`** ortamında çalıştırıldığında `IdentityDataSee
+ ### 7.2. Süreç İçi Mesajlaşma Kuyruğu (In-Memory Service Bus & Event Handling)
+ Kuyruk süreç içidir: uygulama yeniden başlarsa işlenmemiş olaylar kaybolur; birden fazla instance'ta paylaşılmaz (outbox/dış kuyruk S5 notlarında). `System.Threading.Channels` tabanlı `InMemoryMessageQueue` üzerinde çalışır, olaylar `InMemoryBusBackgroundService` tarafından tüketilir ve ilgili `IEventHandler<T>` implementasyonuna iletilir. Best-effort çalışır: kuyruk doluysa mesaj düşürülür ve uyarı loglanır, çağıran HTTP isteği asla bekletilmez.
+ 
++### 7.3. Önbellekleme Altyapısı (In-Memory Caching & Cache Invalidation)
++- **Sözleşme ve Uygulama:** `Application/Contracts/Caching/ICacheService` (`GetOrCreateAsync`, `GetOrCreateOrNullAsync`, `GetAsync`, `SetAsync`, `RemoveAsync`) sözleşmesi `Infrastructure/Caching/CacheService` sınıfı ile `IMemoryCache` üzerinde uygulanır. Uygulamanın paylaşılan `IMemoryCache` örneğinden bağımsız, boyut sınırlı kendi örneğini kullanır.
++- **Kapsam:** Şablonda önbellek kapsamı **yalnızca ürün listesidir** (`GetAllListAsync`). Kategori listesi, sayfalı ürün listesi ve `GetByIdAsync` önbelleğe alınmamıştır; ihtiyaç halinde aynı kalıpla eklenebilir.
++- **Cache Stampede Koruması:** `GetOrCreateAsync` ve `GetOrCreateOrNullAsync` sabit 32 şeritli kilitle (`SemaphoreSlim`) çalışır; dinamik anahtarlarda kilit sözlüğü büyümez/sızmaz ve önbellek boşken gelen eşzamanlı isteklerde veritabanına tek bir sorgu gönderilir.
++- **Negatif Önbellekleme:** `GetOrCreateOrNullAsync` ile var olmayan ("kayıt yok") sonuçlar kısa süreliğine (varsayılan 30 saniye `nullExpiration`) saklanır.
++- **Geçersizleştirme (Invalidation) Kuralı:** Ürün listesini etkileyen HER yazma yolu (servisler, olay handler'ları, toplu işler, arka plan servisleri) transaction commit sonrasında `cacheService.InvalidateProductsAsync()` (`Application/Common/CacheKeys`) çağırmalıdır. Aksi takdirde liste önbelleğinde TTL süresi (5 dakika) boyunca bayat veri kalır.
++- **Yapılandırma:** `appsettings.json` içinde isteğe bağlı olarak `"Caching": { "SizeLimit": 1024 }` (varsayılan: 1024 anahtar) tanımlanabilir.
++
+ ---
+ 
+ ## 8. 🚀 Şablon Kullanımı, Migration ve Canlıya Geçiş (Template Usage, EF Migrations & Production Checklist)
+diff --git a/docs/AI_WORKFLOW.md b/docs/AI_WORKFLOW.md
+index fe2c529..0eeed39 100644
+--- a/docs/AI_WORKFLOW.md
++++ b/docs/AI_WORKFLOW.md
+@@ -64,7 +64,7 @@ Bu doküman, **ProjectApp (.NET 10 Onion Architecture)** projesinde yapay zeka k
+ - **SOLID İhlalleri:**
+   - **Single Responsibility (SRP):** Servis, Repository ve Konfigürasyon sınıflarının tek bir sorumluluğu olmalı.
+   - **Open/Closed (OCP):** Yeni bir iş kuralı eklemek için mevcut sınıflarda devasa `if/else` veya `switch` blokları mı değiştiriliyor?
+-  - **Dependency Inversion (DIP):** `Application` katmanı altyapı ihtiyaçları için yalnızca `Application/Contracts/*` (`IProductRepository`, `IUnitOfWork`, `IEmailService`, `ICurrentUserService`, `IServiceBus`, `IEventHandler` — önbellek sözleşmesi S5 reçetesindedir) sözleşmelerine mi bağımlı?
++  - **Dependency Inversion (DIP):** `Application` katmanı altyapı ihtiyaçları için yalnızca `Application/Contracts/*` (`IProductRepository`, `IUnitOfWork`, `IEmailService`, `ICurrentUserService`, `IServiceBus`, `IEventHandler`, `ICacheService`) sözleşmelerine mi bağımlı?
+ - **DRY (Don't Repeat Yourself) İhlalleri:**
+   - `AuditDbContextInterceptor` zaten `Created`, `CreatedBy`, `Updated`, `UpdatedBy` ve Soft-Delete (`IsDeleted`) alanlarını otomatik yönetirken, servis içinde bu alanların elle tekrar atanması.
+   - `FluentValidationFilter` varken Controller veya Service içinde mükerrer `ModelState` kontrolü yazılması.
+@@ -112,7 +112,7 @@ Bu aşama, stil ve mimari incelemeden **ayrı bir derinlemesine geçiş** olarak
+ - **Soft-Delete ve Global Query Filter Tutarlılığı:**
+   - `AppDbContext` içinde tanımlı `HasQueryFilter(e => !e.IsDeleted)` filtresinin ilişkili tablolarda (ör. silinmiş bir kategorinin ürünlerinin listelenmesi veya aynı isimde silinmiş bir kaydın Unique Index / `AnyAsync` kontrolüne takılması) yarattığı mantıksal çelişkiler.
+ - **Önbellek (Cache) Tutarsızlığı:**
+-  - Önbellek (S5 reçetesi) kullanılan yerlerde veri güncellendiğinde veya silindiğinde ilgili önbellek anahtarının temizlenmemesi (*stale data*).
++  - Önbellek kullanılan yerlerde veri güncellendiğinde veya silindiğinde ilgili önbellek anahtarının temizlenmemesi (*stale data*; `InvalidateProductsAsync()` çağrısının unutulması).
+ - **Eksik Girdi Doğrulaması (FluentValidation):**
+   - Yeni eklenen `Create*Request` veya `Update*Request` record'ları için `AbstractValidator<T>` sınıfının yazılmamış olması veya sınır kurallarının (boş string, negatif fiyat, geçersiz `Guid.Empty`) eksik bırakılması.
+ 
+diff --git a/docs/wiki/index.md b/docs/wiki/index.md
+index 9de8f13..773f1c2 100644
+--- a/docs/wiki/index.md
++++ b/docs/wiki/index.md
+@@ -19,12 +19,13 @@
+ - **Categories (`Core/ProjectApp.Application/Features/Categories`)** — Kategori CRUD işlemleri, ürünleriyle birlikte kategori sorgulama ve Mapster eşlemeleri (`ICategoryService` → `CategoryService`).
+ - **Products (`Core/ProjectApp.Application/Features/Products`)** — Ürün CRUD, stok güncelleme (`UpdateStock`), RowVersion ile iyimser eşzamanlılık, sayfalama ve `ProductAddedEvent` yayımlama (`IProductService` → `ProductService`).
+ - **Messaging (`Core/ProjectApp.Domain/Events`, `Application/Contracts/Infrastructure/IServiceBus` → `Infrastructure/Messaging`)** — `IEvent`/`IMessage` domain olayları, `System.Threading.Channels` tabanlı `InMemoryMessageQueue` + `InMemoryBusBackgroundService` ve `ProductAddedEventHandler` tüketici dinleyicisi.
++- **Caching (`Application/Contracts/Caching/ICacheService` → `Infrastructure/Caching/CacheService`, `Application/Common/CacheKeys`)** — Süreç içi boyut sınırlı önbellek, 32 şeritli stampede koruması, negatif önbellek (`GetOrCreateOrNullAsync`) ve `InvalidateProductsAsync()` uzantısı (varsayılan kapsam: ürün listesi).
+ 
+ ---
+ 
+ ## ⚙️ 3. Çekirdek ve Altyapı Bileşenleri
+ - **Domain (`Core/ProjectApp.Domain`)** — Sıfır dış bağımlılıklı saf POCO Entity'ler (`BaseEntity`, `AuditableEntity`, `IAuditEntity`) ve Domain Event'leri (`IEvent`, `IMessage`, `ProductAddedEvent`).
+-- **Infrastructure (`Infrastructure/ProjectApp.Infrastructure`)** — `AppDbContext` (`IdentityDbContext<AppUser, AppRole, Guid>`), `ProductRepository`, `CategoryRepository`, `UnitOfWork`, `AuditDbContextInterceptor`, `IdentityDataSeeder`, Identity servisleri (`AuthService`, `UserService`, `TokenService`, `JwtOption`), `EmailService` ve süreç içi mesajlaşma (`InMemoryServiceBus`, `InMemoryMessageQueue`, `InMemoryBusBackgroundService`, `ProductAddedEventHandler`).
++- **Infrastructure (`Infrastructure/ProjectApp.Infrastructure`)** — `AppDbContext` (`IdentityDbContext<AppUser, AppRole, Guid>`), `ProductRepository`, `CategoryRepository`, `UnitOfWork`, `AuditDbContextInterceptor`, `IdentityDataSeeder`, Identity servisleri (`AuthService`, `UserService`, `TokenService`, `JwtOption`), önbellek servisi (`CacheService`), `EmailService` ve süreç içi mesajlaşma (`InMemoryServiceBus`, `InMemoryMessageQueue`, `InMemoryBusBackgroundService`, `ProductAddedEventHandler`).
+ - **Sunum (`Presentation/ProjectApp.WebAPI`)** — `CustomBaseController` (`api/v{version:apiVersion}/[controller]`, `/api/v1/...`), API versiyonlama (`VersioningExtensions`), `BearerSecuritySchemeTransformer` + Scalar UI (`/scalar/v1`), `RateLimiterExtensions`, `SecurityHeadersExtensions`, `ForwardedHeadersExtensions`, `ExceptionHandlers/` ve `Filters/`.
+ 
+ ---
+@@ -37,7 +38,7 @@
+ ---
+ 
+ ## 📦 5. Reçeteler
+-- **[`recipes/README.md`](../../recipes/README.md)** — Seviye yükseltme kılavuzu: S4'ten S5'e (önbellek) geçiş ve opsiyonel Dapper tarifleri.
++- **[`recipes/README.md`](../../recipes/README.md)** — Mimari kararlar (S5 tavanı: dağıtık önbellek, outbox, çok kiracılık, OpenTelemetry) ve opsiyonel Dapper tarifleri.
+ 
+ ---
+ 
+diff --git a/tests/ProjectApp.UnitTests/CategoryServiceTests.cs b/tests/ProjectApp.UnitTests/CategoryServiceTests.cs
+index d859141..2b30a60 100644
+--- a/tests/ProjectApp.UnitTests/CategoryServiceTests.cs
++++ b/tests/ProjectApp.UnitTests/CategoryServiceTests.cs
+@@ -3,6 +3,7 @@ using Mapster;
+ using MapsterMapper;
+ using NSubstitute;
+ using ProjectApp.Application;
++using ProjectApp.Application.Contracts.Caching;
+ using ProjectApp.Application.Contracts.Persistence;
+ using ProjectApp.Application.Features.Categories;
+ using ProjectApp.Domain.Entities;
+@@ -13,6 +14,7 @@ public class CategoryServiceTests
+ {
+     private readonly ICategoryRepository _categoryRepository = Substitute.For<ICategoryRepository>();
+     private readonly IProductRepository _productRepository = Substitute.For<IProductRepository>();
++    private readonly ICacheService _cacheService = Substitute.For<ICacheService>();
+     private readonly IUnitOfWork _unitOfWork = Substitute.For<IUnitOfWork>();
+     private readonly CategoryService _sut;
+ 
+@@ -21,7 +23,7 @@ public class CategoryServiceTests
+         var config = new TypeAdapterConfig();
+         config.Scan(typeof(ServiceRegistration).Assembly);
+ 
+-        _sut = new CategoryService(_categoryRepository, _productRepository, _unitOfWork, new Mapper(config));
++        _sut = new CategoryService(_categoryRepository, _productRepository, _cacheService, _unitOfWork, new Mapper(config));
+     }
+ 
+     [Fact]
+diff --git a/tests/ProjectApp.UnitTests/ProductServiceTests.cs b/tests/ProjectApp.UnitTests/ProductServiceTests.cs
+index c7048ee..8ea5758 100644
+--- a/tests/ProjectApp.UnitTests/ProductServiceTests.cs
++++ b/tests/ProjectApp.UnitTests/ProductServiceTests.cs
+@@ -3,6 +3,7 @@ using Mapster;
+ using MapsterMapper;
+ using NSubstitute;
+ using ProjectApp.Application;
++using ProjectApp.Application.Contracts.Caching;
+ using ProjectApp.Application.Contracts.Infrastructure;
+ using ProjectApp.Application.Contracts.Persistence;
+ using ProjectApp.Application.Features.Products;
+@@ -18,6 +19,7 @@ public class ProductServiceTests
+     private readonly IProductRepository _productRepository = Substitute.For<IProductRepository>();
+     private readonly ICategoryRepository _categoryRepository = Substitute.For<ICategoryRepository>();
+     private readonly IUnitOfWork _unitOfWork = Substitute.For<IUnitOfWork>();
++    private readonly ICacheService _cacheService = Substitute.For<ICacheService>();
+     private readonly IServiceBus _serviceBus = Substitute.For<IServiceBus>();
+     private readonly ProductService _sut;
+ 
+@@ -26,7 +28,7 @@ public class ProductServiceTests
+         var config = new TypeAdapterConfig();
+         config.Scan(typeof(ServiceRegistration).Assembly);
+ 
+-        _sut = new ProductService(_productRepository, _categoryRepository, _unitOfWork, new Mapper(config), _serviceBus);
++        _sut = new ProductService(_productRepository, _categoryRepository, _unitOfWork, new Mapper(config), _cacheService, _serviceBus);
+     }
+ 
+     [Fact]

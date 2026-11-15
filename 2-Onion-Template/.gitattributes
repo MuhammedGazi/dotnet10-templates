@@ -1,0 +1,3 @@
+# Satýr sonlarý tek tip: git dosyalarý normalize eder, çalýþma kopyasýnda platform satýr sonu kullanýlýr.
+* text=auto
+*.sh text eol=lf

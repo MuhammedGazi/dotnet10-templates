@@ -1,0 +1,133 @@
+{
+  "$schema": "http://json.schemastore.org/template",
+  "author": "Muhammed Çelenk",
+  "classifications": [
+    "Common",
+    "Web",
+    "API",
+    "Onion Architecture",
+    "Clean Architecture"
+  ],
+  "name": "Onion Architecture Template (.NET 10)",
+  "generatorVersions": "[1.0.0.0-*)",
+  "description": "Level S3 (internal organization) 4-project Onion Architecture ASP.NET Core Web API template for .NET 10: EF Core, ASP.NET Core Identity + JWT (refresh token rotation, security stamp), audit fields, soft delete, RowVersion, FluentValidation, Mapster, Serilog, rate limiting, health checks, Scalar UI and xUnit tests. Upgrade recipes to S4 (domain events, API versioning) and S5 (cache) in recipes/.",
+  "groupIdentity": "DotNet10Templates.Onion",
+  "precedence": 100,
+  "identity": "DotNet10Templates.Onion.CSharp",
+  "shortName": "my-onion",
+  "preferNameDirectory": true,
+  "tags": {
+    "language": "C#",
+    "type": "solution"
+  },
+  "primaryOutputs": [
+    {
+      "path": "ProjectApp.slnx"
+    }
+  ],
+  "sources": [
+    {
+      "modifiers": [
+        {
+          "exclude": [
+            "**/[Bb]in/**",
+            "**/[Oo]bj/**",
+            "**/.vs/**",
+            "**/.vscode/**",
+            "**/.idea/**",
+            "**/.claude/**",
+            "**/.git/**",
+            "**/logs/**",
+            "**/TestResults/**",
+            "**/coverage/**",
+            "**/_ReSharper*/**",
+            "**/*.user",
+            "**/*.suo",
+            "**/*.trx",
+            "**/*.local.json",
+            "**/.env",
+            "**/.env.*"
+          ]
+        }
+      ]
+    }
+  ],
+  "guids": [
+    "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+    "0f8fad5b-d9cb-469f-a165-70867728950e"
+  ],
+  "symbols": {
+    "safeProjectName": {
+      "type": "derived",
+      "valueSource": "name",
+      "valueTransform": "safe_namespace",
+      "replaces": "ProjectApp",
+      "fileRename": "ProjectApp",
+      "description": "Proje adının geçerli C# ad alanı biçimi (ör. my-shop → my_shop); hem içerikte hem dosya/klasör adlarında kullanılır."
+    },
+    "httpPort": {
+      "type": "generated",
+      "generator": "port",
+      "parameters": {
+        "low": 5000,
+        "high": 5999
+      },
+      "replaces": "5062",
+      "onlyIf": [
+        {
+          "after": "localhost:"
+        }
+      ]
+    },
+    "httpsPort": {
+      "type": "generated",
+      "generator": "port",
+      "parameters": {
+        "low": 7000,
+        "high": 7999
+      },
+      "replaces": "7020",
+      "onlyIf": [
+        {
+          "after": "localhost:"
+        }
+      ]
+    },
+    "skipRestore": {
+      "type": "parameter",
+      "datatype": "bool",
+      "description": "Oluşturduktan sonra 'dotnet restore' çalıştırılmasın.",
+      "defaultValue": "false"
+    }
+  },
+  "forms": {
+    "safe_namespace": {
+      "identifier": "safe_namespace"
+    }
+  },
+  "postActions": [
+    {
+      "id": "restore",
+      "description": "NuGet paketlerini geri yükler.",
+      "manualInstructions": [
+        {
+          "text": "dotnet restore"
+        }
+      ],
+      "actionId": "210D431B-A78B-4D2F-B762-4ED3E3EA9025",
+      "continueOnError": true,
+      "condition": "(!skipRestore)"
+    },
+    {
+      "id": "next-steps",
+      "description": "Sonraki adımlar",
+      "manualInstructions": [
+        {
+          "text": "Proje oluşturuldu. Sonraki adımlar: (1) Veritabanı şeması ve roller için: dotnet ef database update --project ./Infrastructure/<Ad>.Infrastructure --startup-project ./Presentation/<Ad>.WebAPI (2) dotnet run ile başlatın; Development'ta admin@admin.com hesabı appsettings.Development.json içindeki Seed:AdminPassword ile oluşur. (3) Production'da Jwt__SigningKey, ConnectionStrings__DefaultConnection ve Cors__AllowedOrigins__0 ortam değişkenlerini verin. Ayrıntı: README.md §8."
+        }
+      ],
+      "actionId": "AC1156F7-BB77-4DB8-B28F-24EEBCCA1E5C",
+      "continueOnError": true
+    }
+  ]
+}
