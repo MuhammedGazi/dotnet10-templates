@@ -1,3 +1,4 @@
+// S1 entegrasyon testlerinde CustomWebApplicationFactory tarafından kullanılır; S1-S2 ve S2-S3 reçetelerinde de yer alır.
 using Microsoft.EntityFrameworkCore;
 using ProjectApp.Repositories;
 

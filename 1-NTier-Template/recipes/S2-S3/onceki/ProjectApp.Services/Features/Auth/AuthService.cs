@@ -27,7 +27,7 @@ public class AuthService(
         if (user is null)
         {
             // E-posta loglanmaz (kişisel veri); yalnızca olay kaydedilir.
-            logger.LogWarning("Bilinmeyen veya silinmiş hesapla başarısız giriş denemesi.");
+            logger.LogWarning("Bilinmeyen hesapla başarısız giriş denemesi.");
             SimulatePasswordCheck(request.Password);
             return ServiceResult<TokenResponse>.Fail("E-posta veya şifre hatalı.", HttpStatusCode.Unauthorized);
         }

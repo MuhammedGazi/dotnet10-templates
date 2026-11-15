@@ -1,3 +1,4 @@
+// S1 şablonunda tüketicisi yoktur; S1-S2 (şifre sıfırlama) ve S2-S3 (e-posta değişikliği) reçeteleri tarafından kullanılır.
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 

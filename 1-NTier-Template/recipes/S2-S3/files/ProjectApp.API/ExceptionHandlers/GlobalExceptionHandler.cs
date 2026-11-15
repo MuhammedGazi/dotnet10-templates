@@ -23,8 +23,10 @@ public class GlobalExceptionHandler(ILogger<GlobalExceptionHandler> logger) : IE
             return true;
         }
 
-        // Eşzamanlılık çakışması (RowVersion) -> 409
-        if (exception is DbUpdateConcurrencyException)
+        // Eşzamanlılık çakışması (RowVersion) veya veritabanı deadlock (1205) -> 409
+        if (exception is DbUpdateConcurrencyException
+            or SqlException { Number: 1205 }
+            or DbUpdateException { InnerException: SqlException { Number: 1205 } })
         {
             logger.LogWarning(exception, "Eşzamanlılık çakışması oluştu.");
             var concurrency = ServiceResult.Fail("Kayıt başka bir işlem tarafından değiştirildi, lütfen yenileyip tekrar deneyin.", HttpStatusCode.Conflict);

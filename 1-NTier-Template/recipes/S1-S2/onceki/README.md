@@ -132,7 +132,7 @@ ProjectApp.slnx
 │   └── ServiceResult.cs                     # ServiceResult ve ServiceResult<T> sarmalayıcı sınıfları
 │
 ├── ProjectApp.Repositories/                 # [Veri Erişim Katmanı - Data Access Layer]
-│   ├── Common/                              # BaseEntity, AuditableEntity (Created/Updated), IAuditEntity, ICurrentUserService
+│   ├── Common/                              # BaseEntity, AuditableEntity (Created/Updated), ICurrentUserService
 │   ├── Context/
 │   │   └── AppDbContext.cs                  # IdentityDbContext<AppUser, AppRole, Guid>
 │   ├── Extensions/

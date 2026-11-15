@@ -7,7 +7,7 @@ using Microsoft.Extensions.Options;
 namespace ProjectApp.IntegrationTests;
 
 /// <summary>
-/// Oturum iptali (security stamp), hesap kilitleme, kullanıcı uçları, stok eşzamanlılığı ve korelasyon kimliği.
+/// Oturum iptali (security stamp), hesap kilitleme, kullanıcı uçları ve korelasyon kimliği.
 /// </summary>
 public class SecurityEndpointsTests(CustomWebApplicationFactory factory) : IClassFixture<CustomWebApplicationFactory>
 {
@@ -104,15 +104,6 @@ public class SecurityEndpointsTests(CustomWebApplicationFactory factory) : IClas
     private static async Task<Guid> CreateCategoryAsync(HttpClient client)
     {
         var response = await client.PostAsJsonAsync($"{Api}/categories", new { name = $"Kat{Guid.NewGuid():N}"[..20] }, TestContext.Current.CancellationToken);
-        response.EnsureSuccessStatusCode();
-        return (await response.ReadDataAsync<IdResponse>()).Id;
-    }
-
-    private static async Task<Guid> CreateProductAsync(HttpClient client, decimal price)
-    {
-        var categoryId = await CreateCategoryAsync(client);
-        var response = await client.PostAsJsonAsync($"{Api}/products",
-            new { name = $"Urun {Guid.NewGuid():N}"[..20], price, stock = 10, categoryId }, TestContext.Current.CancellationToken);
         response.EnsureSuccessStatusCode();
         return (await response.ReadDataAsync<IdResponse>()).Id;
     }

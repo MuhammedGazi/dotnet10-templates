@@ -132,18 +132,18 @@ index 5e44f0d..580fe19 100644
 +        CreateActionResult(await userService.UpdateUserRolesAsync(id, request, cancellationToken));
  }
 diff --git a/ProjectApp.API/ExceptionHandlers/GlobalExceptionHandler.cs b/ProjectApp.API/ExceptionHandlers/GlobalExceptionHandler.cs
-index 4c46735..128551d 100644
+index afcdc83..bb1c732 100644
 --- a/ProjectApp.API/ExceptionHandlers/GlobalExceptionHandler.cs
 +++ b/ProjectApp.API/ExceptionHandlers/GlobalExceptionHandler.cs
 @@ -23,7 +23,7 @@ public class GlobalExceptionHandler(ILogger<GlobalExceptionHandler> logger) : IE
              return true;
          }
  
--        // Eşzamanlılık çakışması (ör. Identity ConcurrencyStamp) -> 409
-+        // Eşzamanlılık çakışması (RowVersion) -> 409
-         if (exception is DbUpdateConcurrencyException)
-         {
-             logger.LogWarning(exception, "Eşzamanlılık çakışması oluştu.");
+-        // Eşzamanlılık çakışması (ör. Identity ConcurrencyStamp) veya veritabanı deadlock (1205) -> 409
++        // Eşzamanlılık çakışması (RowVersion) veya veritabanı deadlock (1205) -> 409
+         if (exception is DbUpdateConcurrencyException
+             or SqlException { Number: 1205 }
+             or DbUpdateException { InnerException: SqlException { Number: 1205 } })
 diff --git a/ProjectApp.API/Extensions/AuthenticationExtensions.cs b/ProjectApp.API/Extensions/AuthenticationExtensions.cs
 index bd97e0d..e608efb 100644
 --- a/ProjectApp.API/Extensions/AuthenticationExtensions.cs
@@ -643,10 +643,10 @@ index 6c5fa31..6d4130e 100644
          builder.Property(x => x.Stock).IsRequired();
          builder.Property(x => x.CategoryId).IsRequired();
 diff --git a/ProjectApp.Services/Features/Auth/AuthService.cs b/ProjectApp.Services/Features/Auth/AuthService.cs
-index 4ee07f1..8efd8c5 100644
+index 52fa44d..8efd8c5 100644
 --- a/ProjectApp.Services/Features/Auth/AuthService.cs
 +++ b/ProjectApp.Services/Features/Auth/AuthService.cs
-@@ -24,7 +24,7 @@ public class AuthService(
+@@ -24,10 +24,10 @@ public class AuthService(
      public async Task<ServiceResult<TokenResponse>> LoginAsync(LoginRequest request, CancellationToken cancellationToken = default)
      {
          var user = await userManager.FindByEmailAsync(request.Email);
@@ -654,7 +654,11 @@ index 4ee07f1..8efd8c5 100644
 +        if (user is null || user.IsDeleted)
          {
              // E-posta loglanmaz (kişisel veri); yalnızca olay kaydedilir.
-             logger.LogWarning("Bilinmeyen veya silinmiş hesapla başarısız giriş denemesi.");
+-            logger.LogWarning("Bilinmeyen hesapla başarısız giriş denemesi.");
++            logger.LogWarning("Bilinmeyen veya silinmiş hesapla başarısız giriş denemesi.");
+             SimulatePasswordCheck(request.Password);
+             return ServiceResult<TokenResponse>.Fail("E-posta veya şifre hatalı.", HttpStatusCode.Unauthorized);
+         }
 @@ -141,6 +141,7 @@ public class AuthService(
  
          var user = await userManager.FindByIdAsync(userId.ToString());
@@ -1172,7 +1176,7 @@ index c4e8254..e74678d 100644
              return ServiceResult<AppUser>.Fail("Kullanıcı bulunamadı.", HttpStatusCode.NotFound);
          }
 diff --git a/README.md b/README.md
-index 358b331..64faf74 100644
+index 4f93183..64faf74 100644
 --- a/README.md
 +++ b/README.md
 @@ -2,7 +2,7 @@
@@ -1324,7 +1328,7 @@ index 358b331..64faf74 100644
    - **Bedel:** Kimliği doğrulanmış her istekte kullanıcı başına bir indeksli okuma (aynı istekte servisler `FindByIdAsync` çağırırsa EF change tracker'dan döner).
  - **Tek oturum:** Kullanıcı başına tek refresh token saklanır; yeni giriş önceki cihazın refresh token'ını geçersiz kılar (önceki cihaz access token süresi dolunca yeniden giriş yapar). Aynı kullanıcı için eşzamanlı iki login/refresh isteğinden biri `409 Conflict` ("Oturum güncellenemedi") alır; istemci isteği tekrarlar.
  - **Giriş olayları loglanır:** başarılı giriş (Information), hatalı şifre ve bilinmeyen hesap (Warning). E-posta loga yazılmaz; zamanlama analizi saldırılarına karşı dummy PBKDF2 doğrulaması çalışır.
-@@ -191,7 +190,7 @@ flowchart TD
+@@ -191,22 +190,25 @@ flowchart TD
  ### 3.2. Kesin IDOR (Insecure Direct Object Reference) Koruması
  - **`UsersController` (`/api/users/*`)** ve **`AuthController.Logout` (`/api/auth/logout`)** içindeki hiçbir uç nokta dışarıdan **`Guid userId` parametresi ALMAZ**.
  - İşlem yapılacak kullanıcı her zaman JWT içindeki `ClaimTypes.NameIdentifier` (`sub`) claim'ini okuyan **`ICurrentUserService.UserId`** üzerinden tespit edilir. Böylece bir kullanıcının başka bir kullanıcının profilini güncellemesi, şifresini değiştirmesi veya oturumunu kapatması mimari düzeyde imkansızdır.
@@ -1333,8 +1337,10 @@ index 358b331..64faf74 100644
  
  ### 3.3. ASP.NET Core Identity & Brute-Force Koruması
  - **Parola Politikası:** En az 8 karakter, büyük harf, küçük harf, rakam ve alfanümerik olmayan özel karakter zorunludur (`RequireUniqueEmail = true`).
-@@ -200,13 +199,16 @@ flowchart TD
- - **Kilit oturumu düşürmez:** Kilit yalnızca girişi ve şifre değiştirmeyi engeller; `refresh-token` kilit durumuna bakmaz, açık oturum sürer. Bilinçli tercihtir: aksi halde saldırgan 5 hatalı şifreyle gerçek kullanıcının oturumunu düşürebilirdi. Oturumu zorla kapatmak için rol değişikliği, şifre sıfırlama veya hesap silme kullanılır (refresh token silinir, security stamp yenilenir).
+ - **Hesap Kilitleme (Account Lockout):** `MaxFailedAccessAttempts = 5` ve `DefaultLockoutTimeSpan = TimeSpan.FromMinutes(15)` aktiftir.
+ - **Kilitli girişte tek tip yanıt:** Kilitli hesapla giriş, şifre doğru olsa bile hatalı şifreyle aynı `401 "E-posta veya şifre hatalı."` yanıtını alır (kilit bilgisi istemciye sızdırılmaz, yalnızca loglanır); kilit 15 dakika sonra kendiliğinden kalkar.
+-- **Kilit oturumu düşürmez:** Kilit yalnızca girişi ve şifre değiştirmeyi engeller; `refresh-token` kilit durumuna bakmaz, açık oturum sürer. Bilinçli tercihtir: aksi halde saldırgan 5 hatalı şifreyle gerçek kullanıcının oturumunu düşürebilirdi. Oturumu zorla kapatmak için şifre sıfırlama kullanılır (refresh token silinir, security stamp yenilenir).
++- **Kilit oturumu düşürmez:** Kilit yalnızca girişi ve şifre değiştirmeyi engeller; `refresh-token` kilit durumuna bakmaz, açık oturum sürer. Bilinçli tercihtir: aksi halde saldırgan 5 hatalı şifreyle gerçek kullanıcının oturumunu düşürebilirdi. Oturumu zorla kapatmak için rol değişikliği, şifre sıfırlama veya hesap silme kullanılır (refresh token silinir, security stamp yenilenir).
  - `AuthService.LoginAsync` içinde önce `userManager.IsLockedOutAsync(user)` kontrol edilir; şifre yanlışsa `userManager.AccessFailedAsync(user)` çağrılarak sayaç artırılır, doğruysa `ResetAccessFailedCountAsync(user)` ile sıfırlanır.
  - **Şifre değiştirmede de lockout:** `ChangePasswordAsync` içinde mevcut şifre hatalıysa `AccessFailedAsync` sayacı artar; hesap kilitliyse işlem `403` ile reddedilir.
 +- **Son yönetici koruması:** Sistemde en az bir aktif Admin kalır. Son aktif Admin kendi hesabını silemez ve Admin rolü kaldırılamaz (`400`); eşzamanlı rol güncellemesinde yarışı kaybeden istek `409` alır. Sayım, Admin rol satırı kilitlenerek yapılır (iki istek aynı anda son iki yöneticiyi düşüremez).
@@ -1740,9 +1746,18 @@ index e6db3cc..285599b 100644
 +4. **Dokümantasyon ve Wiki Her Zaman Güncel:** Kod değişikliği ile `docs/wiki/` (ve gerekirse `README.md`) güncellemesi tek bir bütün sayılır — biri yapılıp diğeri sonraya bırakılmaz.
 +5. **Silmeden Önce Referans Tara:** Bir sınıf, DTO veya kavram kaldırıldığında DI kayıtları, `README.md` ve `docs/wiki/` içindeki tüm referansları güncellenir; kırık link veya geçersiz bilgi bırakılmaz.
 diff --git a/tests/ProjectApp.IntegrationTests/SecurityEndpointsTests.cs b/tests/ProjectApp.IntegrationTests/SecurityEndpointsTests.cs
-index 89fb579..a9cd98e 100644
+index 22d1a18..a9cd98e 100644
 --- a/tests/ProjectApp.IntegrationTests/SecurityEndpointsTests.cs
 +++ b/tests/ProjectApp.IntegrationTests/SecurityEndpointsTests.cs
+@@ -7,7 +7,7 @@ using Microsoft.Extensions.Options;
+ namespace ProjectApp.IntegrationTests;
+ 
+ /// <summary>
+-/// Oturum iptali (security stamp), hesap kilitleme, kullanıcı uçları ve korelasyon kimliği.
++/// Oturum iptali (security stamp), hesap kilitleme, kullanıcı uçları, stok eşzamanlılığı ve korelasyon kimliği.
+ /// </summary>
+ public class SecurityEndpointsTests(CustomWebApplicationFactory factory) : IClassFixture<CustomWebApplicationFactory>
+ {
 @@ -50,6 +50,25 @@ public class SecurityEndpointsTests(CustomWebApplicationFactory factory) : IClas
          Assert.Equal(HttpStatusCode.OK, login.StatusCode);
      }
@@ -1870,11 +1885,26 @@ index 89fb579..a9cd98e 100644
      private sealed record ProfileData(Guid Id, string FullName, string UserName, string Email);
  
      private static async Task<Guid> CreateCategoryAsync(HttpClient client)
+@@ -107,4 +206,13 @@ public class SecurityEndpointsTests(CustomWebApplicationFactory factory) : IClas
+         response.EnsureSuccessStatusCode();
+         return (await response.ReadDataAsync<IdResponse>()).Id;
+     }
++
++    private static async Task<Guid> CreateProductAsync(HttpClient client, decimal price)
++    {
++        var categoryId = await CreateCategoryAsync(client);
++        var response = await client.PostAsJsonAsync($"{Api}/products",
++            new { name = $"Urun {Guid.NewGuid():N}"[..20], price, stock = 10, categoryId }, TestContext.Current.CancellationToken);
++        response.EnsureSuccessStatusCode();
++        return (await response.ReadDataAsync<IdResponse>()).Id;
++    }
+ }
 diff --git a/tests/ProjectApp.IntegrationTests/TestAppDbContext.cs b/tests/ProjectApp.IntegrationTests/TestAppDbContext.cs
-index 1ddfcc9..6cc69a8 100644
+index 98193ce..6cc69a8 100644
 --- a/tests/ProjectApp.IntegrationTests/TestAppDbContext.cs
 +++ b/tests/ProjectApp.IntegrationTests/TestAppDbContext.cs
-@@ -1,10 +1,10 @@
+@@ -1,11 +1,10 @@
+-// S1 entegrasyon testlerinde CustomWebApplicationFactory tarafından kullanılır; S1-S2 ve S2-S3 reçetelerinde de yer alır.
  using Microsoft.EntityFrameworkCore;
  using ProjectApp.Repositories;
 -
@@ -1887,7 +1917,7 @@ index 1ddfcc9..6cc69a8 100644
  /// Üretim kodu (AppDbContext) değişmez, yalnızca test DbContext'i modeli düzeltir.
  /// </summary>
  public class TestAppDbContext(DbContextOptions<AppDbContext> options) : AppDbContext(options)
-@@ -15,12 +15,37 @@ public class TestAppDbContext(DbContextOptions<AppDbContext> options) : AppDbCon
+@@ -16,12 +15,37 @@ public class TestAppDbContext(DbContextOptions<AppDbContext> options) : AppDbCon
  
          foreach (var entityType in builder.Model.GetEntityTypes())
          {

@@ -24,7 +24,8 @@ public class TokenServiceTests
             Id = Guid.CreateVersion7(),
             UserName = "admin",
             Email = "admin@admin.com",
-            FullName = "Admin User"
+            FullName = "Admin User",
+            SecurityStamp = "test-security-stamp"
         };
 
         var (accessToken, expiry) = service.CreateAccessToken(user, [RoleNames.Admin]);
@@ -37,5 +38,6 @@ public class TokenServiceTests
         Assert.Contains(jwt.Claims, c => c.Type == ClaimTypes.Email && c.Value == user.Email);
         Assert.Contains(jwt.Claims, c => c.Type == ClaimTypes.Name && c.Value == user.UserName);
         Assert.Contains(jwt.Claims, c => c.Type == ClaimTypes.Role && c.Value == RoleNames.Admin);
+        Assert.Contains(jwt.Claims, c => c.Type == TokenService.SecurityStampClaimType && c.Value == user.SecurityStamp);
     }
 }

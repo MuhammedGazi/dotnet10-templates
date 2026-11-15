@@ -422,7 +422,7 @@ index 9fa566f..e94f184 100644
      }
  }
 diff --git a/ProjectApp.Services/Features/Auth/AuthService.cs b/ProjectApp.Services/Features/Auth/AuthService.cs
-index c512d45..4ee07f1 100644
+index 987bfd2..52fa44d 100644
 --- a/ProjectApp.Services/Features/Auth/AuthService.cs
 +++ b/ProjectApp.Services/Features/Auth/AuthService.cs
 @@ -1,9 +1,14 @@
@@ -924,7 +924,7 @@ index 874af07..4c372fe 100644
      }
  }
 diff --git a/README.md b/README.md
-index 105e49d..358b331 100644
+index 849765f..4f93183 100644
 --- a/README.md
 +++ b/README.md
 @@ -2,7 +2,7 @@
@@ -965,7 +965,7 @@ index 105e49d..358b331 100644
  │   │   ├── SecurityHeadersExtensions.cs     # nosniff, X-Frame-Options, Referrer-Policy, Permissions-Policy, CSP
  │   │   └── SerilogExtensions.cs             # Serilog yapılandırması (Console + günlük dönen dosya)
  │   ├── Filters/
-@@ -122,13 +122,15 @@ ProjectApp.slnx
+@@ -122,17 +122,19 @@ ProjectApp.slnx
  │   ├── Extensions/
  │   │   └── ServiceExtensions.cs             # Mapster, FluentValidation, Options, e-posta ve Feature-Service DI kayıtları
  │   ├── Features/
@@ -985,6 +985,11 @@ index 105e49d..358b331 100644
  │   └── ServiceResult.cs                     # ServiceResult ve ServiceResult<T> sarmalayıcı sınıfları
  │
  ├── ProjectApp.Repositories/                 # [Veri Erişim Katmanı - Data Access Layer]
+-│   ├── Common/                              # BaseEntity, AuditableEntity (Created/Updated), ICurrentUserService
++│   ├── Common/                              # BaseEntity, AuditableEntity (Created/Updated), IAuditEntity, ICurrentUserService
+ │   ├── Context/
+ │   │   └── AppDbContext.cs                  # IdentityDbContext<AppUser, AppRole, Guid>
+ │   ├── Extensions/
 @@ -140,7 +142,7 @@ ProjectApp.slnx
  │   ├── Categories/                          # Category, CategoryConfiguration (unique index)
  │   ├── Products/                            # Product, ProductConfiguration (unique index)
@@ -1030,7 +1035,7 @@ index 105e49d..358b331 100644
  - **Parola Politikası:** En az 8 karakter, büyük harf, küçük harf, rakam ve alfanümerik olmayan özel karakter zorunludur (`RequireUniqueEmail = true`).
  - **Hesap Kilitleme (Account Lockout):** `MaxFailedAccessAttempts = 5` ve `DefaultLockoutTimeSpan = TimeSpan.FromMinutes(15)` aktiftir.
  - **Kilitli girişte tek tip yanıt:** Kilitli hesapla giriş, şifre doğru olsa bile hatalı şifreyle aynı `401 "E-posta veya şifre hatalı."` yanıtını alır (kilit bilgisi istemciye sızdırılmaz, yalnızca loglanır); kilit 15 dakika sonra kendiliğinden kalkar.
-+- **Kilit oturumu düşürmez:** Kilit yalnızca girişi ve şifre değiştirmeyi engeller; `refresh-token` kilit durumuna bakmaz, açık oturum sürer. Bilinçli tercihtir: aksi halde saldırgan 5 hatalı şifreyle gerçek kullanıcının oturumunu düşürebilirdi. Oturumu zorla kapatmak için rol değişikliği, şifre sıfırlama veya hesap silme kullanılır (refresh token silinir, security stamp yenilenir).
++- **Kilit oturumu düşürmez:** Kilit yalnızca girişi ve şifre değiştirmeyi engeller; `refresh-token` kilit durumuna bakmaz, açık oturum sürer. Bilinçli tercihtir: aksi halde saldırgan 5 hatalı şifreyle gerçek kullanıcının oturumunu düşürebilirdi. Oturumu zorla kapatmak için şifre sıfırlama kullanılır (refresh token silinir, security stamp yenilenir).
  - `AuthService.LoginAsync` içinde önce `userManager.IsLockedOutAsync(user)` kontrol edilir; şifre yanlışsa `userManager.AccessFailedAsync(user)` çağrılarak sayaç artırılır, doğruysa `ResetAccessFailedCountAsync(user)` ile sıfırlanır.
  - **Şifre değiştirmede de lockout:** `ChangePasswordAsync` içinde mevcut şifre hatalıysa `AccessFailedAsync` sayacı artar; hesap kilitliyse işlem `403` ile reddedilir.
 -- Kullanıcı kayıt (register), e-posta değişikliği (change-email) ve hesap silme (DeleteAccount) S2/S3 reçetesiyle gelir.
@@ -1352,7 +1357,7 @@ index d518253..af2d2ef 100644
      {
          base.Dispose(disposing);
 diff --git a/tests/ProjectApp.IntegrationTests/SecurityEndpointsTests.cs b/tests/ProjectApp.IntegrationTests/SecurityEndpointsTests.cs
-index 31d7ede..89fb579 100644
+index 31d7ede..22d1a18 100644
 --- a/tests/ProjectApp.IntegrationTests/SecurityEndpointsTests.cs
 +++ b/tests/ProjectApp.IntegrationTests/SecurityEndpointsTests.cs
 @@ -7,7 +7,7 @@ using Microsoft.Extensions.Options;
@@ -1360,7 +1365,7 @@ index 31d7ede..89fb579 100644
  
  /// <summary>
 -/// Şifre değiştirme, hesap kilitleme (lockout), global rate limit ve girdi doğrulama testleri.
-+/// Oturum iptali (security stamp), hesap kilitleme, kullanıcı uçları, stok eşzamanlılığı ve korelasyon kimliği.
++/// Oturum iptali (security stamp), hesap kilitleme, kullanıcı uçları ve korelasyon kimliği.
  /// </summary>
  public class SecurityEndpointsTests(CustomWebApplicationFactory factory) : IClassFixture<CustomWebApplicationFactory>
  {
@@ -1376,17 +1381,17 @@ index 31d7ede..89fb579 100644
 +        var (_, tokens) = await TestHelpers.RegisterAndLoginAsync(factory, client, Api);
          client.Authorize(tokens.AccessToken);
 -        const string newPassword = "YeniSifre12*";
- 
+-
 -        var change = await client.PostAsJsonAsync($"{Api}/users/change-password",
 -            new { currentPassword = TestHelpers.Password, newPassword }, TestContext.Current.CancellationToken);
 -        Assert.Equal(HttpStatusCode.NoContent, change.StatusCode);
-+        var logout = await client.PostAsync($"{Api}/auth/logout", null, TestContext.Current.CancellationToken);
-+        Assert.Equal(HttpStatusCode.NoContent, logout.StatusCode);
  
 -        // Şifre değişikliği security stamp'i yeniler: eski access token anında geçersizdir.
 -        var meWithOldToken = await client.GetAsync($"{Api}/auth/me", TestContext.Current.CancellationToken);
 -        Assert.Equal(HttpStatusCode.Unauthorized, meWithOldToken.StatusCode);
--
++        var logout = await client.PostAsync($"{Api}/auth/logout", null, TestContext.Current.CancellationToken);
++        Assert.Equal(HttpStatusCode.NoContent, logout.StatusCode);
+ 
 -        var oldLogin = await client.PostAsJsonAsync($"{Api}/auth/login", new { email, password = TestHelpers.Password }, TestContext.Current.CancellationToken);
 -        Assert.Equal(HttpStatusCode.Unauthorized, oldLogin.StatusCode);
 -
@@ -1461,7 +1466,7 @@ index 31d7ede..89fb579 100644
      }
  
      [Theory]
-@@ -103,10 +99,21 @@ public class SecurityEndpointsTests(CustomWebApplicationFactory factory) : IClas
+@@ -103,6 +99,8 @@ public class SecurityEndpointsTests(CustomWebApplicationFactory factory) : IClas
          Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
      }
  
@@ -1470,19 +1475,6 @@ index 31d7ede..89fb579 100644
      private static async Task<Guid> CreateCategoryAsync(HttpClient client)
      {
          var response = await client.PostAsJsonAsync($"{Api}/categories", new { name = $"Kat{Guid.NewGuid():N}"[..20] }, TestContext.Current.CancellationToken);
-         response.EnsureSuccessStatusCode();
-         return (await response.ReadDataAsync<IdResponse>()).Id;
-     }
-+
-+    private static async Task<Guid> CreateProductAsync(HttpClient client, decimal price)
-+    {
-+        var categoryId = await CreateCategoryAsync(client);
-+        var response = await client.PostAsJsonAsync($"{Api}/products",
-+            new { name = $"Urun {Guid.NewGuid():N}"[..20], price, stock = 10, categoryId }, TestContext.Current.CancellationToken);
-+        response.EnsureSuccessStatusCode();
-+        return (await response.ReadDataAsync<IdResponse>()).Id;
-+    }
- }
 diff --git a/tests/ProjectApp.IntegrationTests/TestHelpers.cs b/tests/ProjectApp.IntegrationTests/TestHelpers.cs
 index 914f809..d7f0846 100644
 --- a/tests/ProjectApp.IntegrationTests/TestHelpers.cs
@@ -1571,7 +1563,7 @@ index 72f7a93..89187d7 100644
          Assert.NotEmpty(Validate(options));
      }
 diff --git a/tests/ProjectApp.UnitTests/TokenServiceTests.cs b/tests/ProjectApp.UnitTests/TokenServiceTests.cs
-index 035b3b2..4c0c062 100644
+index 5d380dd..4c0c062 100644
 --- a/tests/ProjectApp.UnitTests/TokenServiceTests.cs
 +++ b/tests/ProjectApp.UnitTests/TokenServiceTests.cs
 @@ -1,7 +1,3 @@
@@ -1582,7 +1574,7 @@ index 035b3b2..4c0c062 100644
  using ProjectApp.Services.Identity;
  
  namespace ProjectApp.UnitTests;
-@@ -9,33 +5,23 @@ namespace ProjectApp.UnitTests;
+@@ -9,35 +5,23 @@ namespace ProjectApp.UnitTests;
  public class TokenServiceTests
  {
      [Fact]
@@ -1602,7 +1594,8 @@ index 035b3b2..4c0c062 100644
 -            Id = Guid.CreateVersion7(),
 -            UserName = "admin",
 -            Email = "admin@admin.com",
--            FullName = "Admin User"
+-            FullName = "Admin User",
+-            SecurityStamp = "test-security-stamp"
 -        };
 +        Assert.Equal(TokenService.HashToken("token-1"), TokenService.HashToken("token-1"));
 +    }
@@ -1627,6 +1620,7 @@ index 035b3b2..4c0c062 100644
 -        Assert.Contains(jwt.Claims, c => c.Type == ClaimTypes.Email && c.Value == user.Email);
 -        Assert.Contains(jwt.Claims, c => c.Type == ClaimTypes.Name && c.Value == user.UserName);
 -        Assert.Contains(jwt.Claims, c => c.Type == ClaimTypes.Role && c.Value == RoleNames.Admin);
+-        Assert.Contains(jwt.Claims, c => c.Type == TokenService.SecurityStampClaimType && c.Value == user.SecurityStamp);
 +        Assert.Equal(64, hash.Length);
 +        Assert.Matches("^[0-9a-fA-F]{64}$", hash);
      }
